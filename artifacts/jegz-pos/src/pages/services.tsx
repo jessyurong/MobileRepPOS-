@@ -56,7 +56,7 @@ export default function ServicesPage() {
   };
 
   const handleSave = () => {
-    if (!formData.name) return toast({ title: "Name is required", variant: "destructive" });
+    if (!formData.name) { toast({ title: "Name is required", variant: "destructive" }); return; }
 
     const onSuccess = () => {
       queryClient.invalidateQueries({ queryKey: getListServicesQueryKey() });

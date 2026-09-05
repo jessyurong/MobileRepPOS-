@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useGetDashboard } from "@/lib/offline-api";
+import { useGetDashboard, useShopProfile } from "@/lib/offline-api";
 import { formatCurrency } from "@/lib/utils";
 import {
   Card,
@@ -91,6 +91,7 @@ function ChartTooltip({
 
 export default function Dashboard() {
   const [period, setPeriod] = useState<Period>("today");
+  const shopProfile = useShopProfile();
 
   const {
     data: rawDashboard,
@@ -138,6 +139,11 @@ export default function Dashboard() {
       gcashCount: rawDashboard.gcashCount ?? 0,
       lowStockCount: rawDashboard.lowStockCount ?? 0,
       pendingCount: rawDashboard.pendingCount ?? 0,
+      openJobs: rawDashboard.openJobs ?? 0,
+      depositTotal: rawDashboard.depositTotal ?? 0,
+      outstandingTotal: rawDashboard.outstandingTotal ?? 0,
+      preOrderSales: rawDashboard.preOrderSales ?? 0,
+      preOrderCount: rawDashboard.preOrderCount ?? 0,
       periodSales: rawDashboard.periodSales ?? 0,
       periodProfit: rawDashboard.periodProfit ?? 0,
       periodTransactions:
@@ -188,9 +194,17 @@ export default function Dashboard() {
     <div className="space-y-6">
       {/* PAGE HEADER */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <h1 className="text-2xl font-bold tracking-tight text-primary">
-          Dashboard
-        </h1>
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-primary">
+            Dashboard
+          </h1>
+          {(shopProfile.name || shopProfile.address) && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              {shopProfile.name}
+              {shopProfile.address ? ` · ${shopProfile.address}` : ""}
+            </p>
+          )}
+        </div>
 
         <Tabs
           value={period}
@@ -340,6 +354,78 @@ export default function Dashboard() {
         </Card>
       </div>
 
+      {/* PENDING / PRE-ORDER / PAYMENT KPIS */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Card className="border-l-4 border-l-amber-500 bg-card">
+          <CardHeader className="flex flex-row items-center justify-between pb-1">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Open Jobs
+            </CardTitle>
+            <Clock className="h-4 w-4 text-amber-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-amber-600">
+              {dashboard.openJobs}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              pending / in repair queue
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-blue-500 bg-card">
+          <CardHeader className="flex flex-row items-center justify-between pb-1">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Deposits Held
+            </CardTitle>
+            <Wallet className="h-4 w-4 text-blue-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-blue-500">
+              {formatCurrency(dashboard.depositTotal)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              partial payments on open jobs
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-destructive bg-card">
+          <CardHeader className="flex flex-row items-center justify-between pb-1">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Outstanding Balance
+            </CardTitle>
+            <TrendingUp className="h-4 w-4 text-destructive" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-destructive">
+              {formatCurrency(dashboard.outstandingTotal)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              still to collect on open jobs
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="border-l-4 border-l-cyan-600 bg-card">
+          <CardHeader className="flex flex-row items-center justify-between pb-1">
+            <CardTitle className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Pre-Order Sales
+            </CardTitle>
+            <CheckCircle2 className="h-4 w-4 text-cyan-600" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-cyan-700">
+              {formatCurrency(dashboard.preOrderSales)}
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              {dashboard.preOrderCount} pre-order job
+              {dashboard.preOrderCount !== 1 ? "s" : ""}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* PENDING JOBS */}
       {dashboard.pendingCount > 0 && (
         <div className="flex items-center gap-3 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-3">
@@ -353,7 +439,7 @@ export default function Dashboard() {
             {dashboard.pendingCount !== 1
               ? "s"
               : ""}{" "}
-            in queue (pending + ready)
+            in queue (pending + in repair)
           </span>
         </div>
       )}
@@ -851,7 +937,15 @@ export default function Dashboard() {
                   </TableHead>
 
                   <TableHead>
-                    Unit
+                    Customer
+                  </TableHead>
+
+                  <TableHead>
+                    Phone / Device
+                  </TableHead>
+
+                  <TableHead>
+                    Job #
                   </TableHead>
 
                   <TableHead>
@@ -877,11 +971,17 @@ export default function Dashboard() {
                   (tx) => (
                     <TableRow key={tx.id}>
                       <TableCell className="font-medium">
-                        {tx.customer}
+                        {tx.customerName || tx.customer || "Walk-in"}
                       </TableCell>
 
                       <TableCell className="text-muted-foreground text-sm">
-                        {tx.unit}
+                        {tx.customerPhone || tx.phoneModel || tx.unit || "—"}
+                      </TableCell>
+
+                      <TableCell className="text-xs">
+                        <span className="font-mono text-primary bg-primary/10 rounded px-1.5 py-0.5">
+                          {tx.jobNumber || `#${tx.id}`}
+                        </span>
                       </TableCell>
 
                       <TableCell>
@@ -915,6 +1015,10 @@ export default function Dashboard() {
                           >
                             {tx.paymentMethod.toUpperCase()}
                           </Badge>
+                        ) : tx.paymentStatus === "partial" ? (
+                          <Badge className="bg-blue-600 text-white">
+                            PARTIAL
+                          </Badge>
                         ) : (
                           <span className="text-xs text-muted-foreground italic">
                             On pickup
@@ -925,24 +1029,26 @@ export default function Dashboard() {
                       <TableCell>
                         <Badge
                           variant={
-                            (tx.status as string) === "complete" || (tx.status as string) === "completed"
+                            ["completed", "complete", "done"].includes((tx.status || "").toString())
                               ? "default"
                               : "secondary"
                           }
                           className={
-                            (tx.status as string) === "complete" || (tx.status as string) === "completed"
+                            ["completed", "complete", "done"].includes((tx.status || "").toString())
                               ? "bg-green-600 text-white"
-                              : (tx.status as string) === "ready"
-                                ? "bg-blue-500 text-white"
-                                : "bg-amber-500 text-white"
+                              : (tx.status || "").toString().replace(/-/g, "_") === "ready_for_pickup"
+                                ? "bg-emerald-500 text-white"
+                                : (tx.status || "").toString() === "cancelled"
+                                  ? "bg-slate-500 text-white"
+                                  : "bg-amber-500 text-white"
                           }
                         >
-                          {tx.status}
+                          {(tx.status || "pending").toString().replace(/_/g, " ")}
                         </Badge>
                       </TableCell>
 
                       <TableCell className="text-right font-bold text-primary">
-                        {formatCurrency(tx.total)}
+                        {formatCurrency(tx.total ?? tx.totalAmount ?? 0)}
                       </TableCell>
                     </TableRow>
                   ),
@@ -953,7 +1059,7 @@ export default function Dashboard() {
                   0 && (
                     <TableRow>
                       <TableCell
-                        colSpan={6}
+                        colSpan={7}
                         className="text-center py-6 text-muted-foreground text-sm"
                       >
                         No transactions yet

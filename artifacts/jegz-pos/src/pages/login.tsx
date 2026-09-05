@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "@/lib/auth-context";
+import { useShopProfile } from "@/lib/offline-api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,6 +9,7 @@ import { Wrench, Lock, User } from "lucide-react";
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const shopProfile = useShopProfile();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -31,10 +33,14 @@ export default function LoginPage() {
         {/* Logo / Brand */}
         <div className="text-center space-y-2">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-primary/10 border border-primary/20 mb-2">
-            <Wrench className="h-8 w-8 text-primary" />
+            {shopProfile.logo ? (
+              <img src={shopProfile.logo} alt={shopProfile.name} className="w-12 h-12 object-contain" />
+            ) : (
+              <Wrench className="h-8 w-8 text-primary" />
+            )}
           </div>
-          <h1 className="text-2xl font-black text-primary tracking-tight">JEGZ MOBILE REPAIR</h1>
-          <p className="text-sm text-muted-foreground">Point of Sale System</p>
+          <h1 className="text-2xl font-black text-primary tracking-tight">{shopProfile.name}</h1>
+          <p className="text-sm text-muted-foreground">{shopProfile.description || "Point of Sale System"}</p>
         </div>
 
         {/* Login Card */}

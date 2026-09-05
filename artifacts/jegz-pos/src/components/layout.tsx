@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { useGetDashboard } from "@/lib/offline-api";
+import { useGetDashboard, useShopProfile } from "@/lib/offline-api";
 import {
   LayoutDashboard,
   ShoppingCart,
@@ -66,6 +66,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const { data: dashboard } = useGetDashboard();
   const { theme, setTheme } = useTheme();
   const { user, logout } = useAuth();
+  const shopProfile = useShopProfile();
 
   const [time, setTime] = useState(new Date());
   useEffect(() => {
@@ -99,9 +100,18 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         )}
       >
         {/* Header */}
-        <div className="flex h-16 items-center justify-between px-4 border-b shrink-0">
-          {!collapsed && (
-            <span className="font-bold text-primary truncate text-sm">JEGZ MOBILE REPAIR</span>
+        <div className="flex h-16 items-center justify-between gap-2 px-4 border-b shrink-0">
+          {!collapsed ? (
+            <span className="flex min-w-0 items-center gap-2">
+              {shopProfile.logo && (
+                <img src={shopProfile.logo} alt={shopProfile.name} className="h-7 w-7 shrink-0 rounded-md object-contain" />
+              )}
+              <span className="font-bold text-primary truncate text-sm">{shopProfile.name}</span>
+            </span>
+          ) : (
+            shopProfile.logo && (
+              <img src={shopProfile.logo} alt={shopProfile.name} className="h-7 w-7 shrink-0 rounded-md object-contain" />
+            )
           )}
           <Button variant="ghost" size="icon" onClick={() => setCollapsed(!collapsed)} className="shrink-0">
             <Menu className="h-5 w-5" />

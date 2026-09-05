@@ -3,7 +3,7 @@
  * These replace the API-based react-query hooks with local IndexedDB queries
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
 import bcrypt from 'bcryptjs';
@@ -20,16 +20,44 @@ import {
   gcashDrawerService,
   settingsService,
   dashboardService,
+  jobService,
+  ensureJobNumbers,
+  isCompletedStatus,
+  isOpenStatus,
+  type EnrichedTransaction,
+  type JobCompletionResult,
+  type JobInput,
   type Product,
   type Service,
   type Technician,
   type Transaction,
   type TransactionItem,
+  type TransactionStatus,
   type DefectiveItem,
   type Backjob,
   type Dashboard,
   type Settings,
+  type TransactionStats,
+  type MonthlyReport,
+  type TechnicianReportRow,
 } from './offline-data-services';
+import { shopProfileFromSettings, type ShopProfile } from './shop-profile';
+
+// ─── Shared invalidation keys ───────────────────────────────────────────────
+function useInvalidateBusinessData() {
+  const queryClient = useQueryClient();
+  return useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['transactions'] });
+    queryClient.invalidateQueries({ queryKey: ['transactionStats'] });
+    queryClient.invalidateQueries({ queryKey: ['products'] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['cashDrawer'] });
+    queryClient.invalidateQueries({ queryKey: ['gcashDrawer'] });
+    queryClient.invalidateQueries({ queryKey: ['technicians'] });
+    queryClient.invalidateQueries({ queryKey: ['monthlyReport'] });
+    queryClient.invalidateQueries({ queryKey: ['technicianReport'] });
+  }, [queryClient]);
+}
 
 // Product Hooks
 export function useListProducts(
@@ -182,127 +210,207 @@ export function useDeleteTechnician(): UseMutationResult<void, unknown, { id: nu
 }
 
 // Transaction Hooks
+export type TransactionListParams = {
+  period?: string;
+  search?: string;
+  status?: string;
+};
+
 export function useListTransactions(
-  _params?: any,
-): UseQueryResult<Transaction[], unknown> {
+  params?: TransactionListParams,
+): UseQueryResult<EnrichedTransaction[], unknown> {
   return useQuery({
-    queryKey: ['transactions'],
-    queryFn: () => transactionService.list(),
+    queryKey: ['transactions', params?.period, params?.search, params?.status],
+    queryFn: () =>
+      transactionService.list({
+        period: ['today', 'week', 'month', 'all'].includes(params?.period || '') ? (params?.period as any) : undefined,
+        search: params?.search,
+        status: params?.status,
+      }),
     staleTime: Infinity,
   });
 }
 
-export function useGetTransaction(id: number | undefined): UseQueryResult<Transaction | undefined, unknown> {
+export function useGetTransaction(id: number | undefined): UseQueryResult<EnrichedTransaction | undefined, unknown> {
   return useQuery({
     queryKey: ['transaction', id],
+    queryFn: () => (id ? transactionService.getEnriched(id) : undefined),
+    enabled: !!id,
+    staleTime: Infinity,
+  });
+}
+
+/** Un-enriched record — used by the POS when opening a pending job. */
+export function useGetTransactionRaw(id: number | undefined): UseQueryResult<Transaction | undefined, unknown> {
+  return useQuery({
+    queryKey: ['transactionRaw', id],
     queryFn: () => (id ? transactionService.get(id) : undefined),
     enabled: !!id,
     staleTime: Infinity,
   });
 }
 
+export function useGetTransactionItems(id: number | undefined): UseQueryResult<TransactionItem[], unknown> {
+  return useQuery({
+    queryKey: ['transactionItems', id],
+    queryFn: () => (id ? transactionItemService.getByTransactionId(id) : []),
+    enabled: !!id,
+    staleTime: Infinity,
+  });
+}
+
+/** Legacy direct-complete hook kept for compatibility; routes through the full job flow. */
 export function useCreateTransaction(): UseMutationResult<number, unknown, any> {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateBusinessData();
   return useMutation({
     mutationFn: async (data: any) => {
-      // Extract items from payload if present
       const items = data.items || [];
-      const { items: _, ...transactionData } = data;
-
-      // Map cart items to transaction items
-      const txItems = items.map((item: any) => ({
-        type: item.type as 'product' | 'service',
-        refId: item.id,
-        name: item.name,
-        quantity: item.quantity || 1,
-        price: item.price || 0,
-        subtotal: (item.quantity || 1) * (item.price || 0),
-      }));
-
-      // Create transaction with items
-      const txId = await transactionService.createWithItems(
-        {
-          customer: data.customerName || 'Walk-in',
-          unit: data.customerPhone || undefined,
-          paymentMethod: data.paymentMethod || 'cash',
-          status: 'completed',
-          total: data.total || 0,
-          notes: data.notes || undefined,
-        },
-        txItems,
-      );
-
-      return txId;
+      const result = await jobService.completeNewJob({
+        customerName: data.customerName || 'Walk-in',
+        customerPhone: data.customerPhone,
+        paymentMethod: data.paymentMethod || 'cash',
+        notes: data.notes,
+        items: items.map((item: any) => ({
+          type: item.type as 'product' | 'service',
+          refId: Number(item.refId ?? item.id) || 0,
+          name: item.name,
+          quantity: item.quantity || 1,
+          price: item.price || 0,
+          subtotal: (item.quantity || 1) * (item.price || 0),
+        })),
+        total: data.total || 0,
+      });
+      return result.id;
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-    },
+    onSuccess: () => invalidate(),
   });
 }
 
 export function useUpdateTransaction(): UseMutationResult<void, unknown, { id: number; data: Partial<Transaction> }> {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateBusinessData();
   return useMutation({
     mutationFn: ({ id, data }) => transactionService.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-    },
+    onSuccess: () => invalidate(),
   });
 }
 
 export function useUpdateTransactionStatus(): UseMutationResult<void, unknown, { id: number; status?: string; data?: { status: string; paymentMethod?: string; cashReceived?: number } }> {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateBusinessData();
   return useMutation({
     mutationFn: async ({ id, status, data }) => {
-      const newStatus = (data?.status || status) as any;
-      const paymentMethod = data?.paymentMethod as any;
-      const updateData: any = { status: newStatus };
-      if (paymentMethod) updateData.paymentMethod = paymentMethod;
-      await transactionService.update(id, updateData);
+      const newStatus = (data?.status || status) as TransactionStatus;
+      await jobService.updateJobStatus(id, newStatus);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-    },
+    onSuccess: () => invalidate(),
   });
 }
 
 export function useDeleteTransaction(): UseMutationResult<void, unknown, { id: number }> {
-  const queryClient = useQueryClient();
+  const invalidate = useInvalidateBusinessData();
   return useMutation({
     mutationFn: async ({ id }) => {
-      // Get transaction items to restore product stock
+      const tx = await transactionService.get(id);
       const items = await transactionItemService.getByTransactionId(id);
-      for (const item of items) {
-        if (item.type === 'product') {
-          const product = await productService.get(item.refId);
-          if (product) {
-            await productService.update(item.refId, {
-              stock: (product.stock ?? 0) + (item.quantity ?? 0),
-            });
+      if (tx && isOpenStatus(tx.status)) {
+        // Open jobs hold reservations — release them before deleting.
+        for (const item of items) {
+          if (item.type === 'product' && !item.isPreOrder && Number(item.refId) > 0) {
+            const product = await productService.get(Number(item.refId));
+            if (product) {
+              await productService.update(product.id, {
+                reservedStock: Math.max(0, (product.reservedStock || 0) - (item.quantity || 0)),
+              });
+            }
           }
         }
-        // Delete the item
-        if (item.id) {
-          await transactionItemService.delete(item.id);
+      } else if (tx && isCompletedStatus(tx.status)) {
+        // Completed jobs deducted stock — restore it on delete (legacy undo behaviour).
+        for (const item of items) {
+          if (item.type === 'product' && !item.isPreOrder && Number(item.refId) > 0) {
+            const product = await productService.get(Number(item.refId));
+            if (product) {
+              await productService.update(product.id, {
+                stock: (product.stock ?? 0) + (item.quantity || 0),
+              });
+            }
+          }
         }
       }
-      // Delete the transaction
+      for (const item of items) {
+        if (item.id) await transactionItemService.delete(item.id);
+      }
       return transactionService.delete(id);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['transactions'] });
-      queryClient.invalidateQueries({ queryKey: ['products'] });
+    onSuccess: () => invalidate(),
+  });
+}
+
+// Job lifecycle hooks (Save as Pending / Edit / Complete / Cancel / Deposit)
+export function useSavePendingJob(): UseMutationResult<{ id: number; jobNumber: string }, unknown, JobInput, unknown> {
+  const invalidate = useInvalidateBusinessData();
+  return useMutation({
+    mutationFn: (input: JobInput) => jobService.saveAsPending(input),
+    onSuccess: () => invalidate(),
+  });
+}
+
+export function useUpdatePendingJob(): UseMutationResult<
+  { id: number; jobNumber: string },
+  unknown,
+  { id: number; data: JobInput; additionalDeposit?: number; additionalDepositMethod?: 'cash' | 'gcash'; status?: TransactionStatus },
+  unknown
+> {
+  const invalidate = useInvalidateBusinessData();
+  return useMutation({
+    mutationFn: ({ id, data, additionalDeposit, additionalDepositMethod, status }) =>
+      jobService.updatePendingJob(id, data, { additionalDeposit, additionalDepositMethod, status }),
+    onSuccess: () => invalidate(),
+  });
+}
+
+export function useCompleteTransaction(): UseMutationResult<
+  JobCompletionResult,
+  unknown,
+  { id?: number; data: JobInput; paymentMethod: 'cash' | 'gcash'; cashReceived?: number },
+  unknown
+> {
+  const invalidate = useInvalidateBusinessData();
+  return useMutation({
+    mutationFn: ({ id, data, paymentMethod, cashReceived }) => {
+      if (id) {
+        return jobService.completeJob(id, { paymentMethod, cashReceived });
+      }
+      return jobService.completeNewJob(data, { cashReceived });
     },
+    onSuccess: () => invalidate(),
+  });
+}
+
+export function useCancelTransaction(): UseMutationResult<void, unknown, { id: number }, unknown> {
+  const invalidate = useInvalidateBusinessData();
+  return useMutation({
+    mutationFn: ({ id }) => jobService.cancelJob(id),
+    onSuccess: () => invalidate(),
+  });
+}
+
+export function useRecordDeposit(): UseMutationResult<
+  { paymentStatus: string; remainingBalance: number; amountPaid: number },
+  unknown,
+  { id: number; data: { amount: number; method: 'cash' | 'gcash'; note?: string } },
+  unknown
+> {
+  const invalidate = useInvalidateBusinessData();
+  return useMutation({
+    mutationFn: ({ id, data }) => jobService.recordDeposit(id, data),
+    onSuccess: () => invalidate(),
   });
 }
 
 // Transaction Stats Hook
 export function useGetTransactionStats(
   params?: { period?: string },
-): UseQueryResult<any, unknown> {
+): UseQueryResult<TransactionStats, unknown> {
   return useQuery({
     queryKey: ['transactionStats', params?.period],
     queryFn: () =>
@@ -447,6 +555,12 @@ export function useUpdateSettings(): UseMutationResult<void, unknown, { data: Re
   });
 }
 
+// Shop Profile Hook
+export function useShopProfile(): ShopProfile {
+  const { data: settings } = useGetSettings();
+  return useMemo(() => shopProfileFromSettings(settings), [settings]);
+}
+
 // Dashboard Hook
 export function useGetDashboard(params?: { period?: string }): UseQueryResult<Dashboard, unknown> {
   return useQuery({
@@ -458,7 +572,7 @@ export function useGetDashboard(params?: { period?: string }): UseQueryResult<Da
 }
 
 // Report Hooks
-export function useGetMonthlyReport(params?: { month?: string }): UseQueryResult<any, unknown> {
+export function useGetMonthlyReport(params?: { month?: string }): UseQueryResult<MonthlyReport, unknown> {
   return useQuery({
     queryKey: ['monthlyReport', params?.month],
     queryFn: () => dashboardService.getMonthlyReport(params?.month),
@@ -466,7 +580,7 @@ export function useGetMonthlyReport(params?: { month?: string }): UseQueryResult
   });
 }
 
-export function useGetTechnicianReport(params?: { period?: string }): UseQueryResult<any[], unknown> {
+export function useGetTechnicianReport(params?: { period?: string }): UseQueryResult<TechnicianReportRow[], unknown> {
   return useQuery({
     queryKey: ['technicianReport', params?.period],
     queryFn: () => dashboardService.getTechnicianReport(params?.period),
@@ -474,14 +588,18 @@ export function useGetTechnicianReport(params?: { period?: string }): UseQueryRe
   });
 }
 
-// Customer Lookup Hook
+// Customer Lookup Hook (kept for API compatibility)
 export function useLookupCustomer(params?: { query?: string }): UseQueryResult<any, unknown> {
   return useQuery({
     queryKey: ['customerLookup', params?.query],
     queryFn: async () => {
+      if (params?.query) {
+        const txs = await transactionService.list({ search: params.query });
+        return txs[0] || null;
+      }
       return null;
     },
-    staleTime: Infinity,
+    staleTime: 60_000,
   });
 }
 
@@ -571,6 +689,23 @@ export function useChangePassword(): UseMutationResult<any, unknown, { data: { c
       return { success: true };
     },
   });
+}
+
+// ─── Data bootstrap for migrated legacy DBs ────────────────────────────────
+export function useBootstrapMigration() {
+  const [done, setDone] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        await ensureJobNumbers();
+      } catch (e) {
+        console.error('Migration bootstrap failed:', e);
+      } finally {
+        setDone(true);
+      }
+    })();
+  }, []);
+  return done;
 }
 
 // Query Key Getters (for cache invalidation)

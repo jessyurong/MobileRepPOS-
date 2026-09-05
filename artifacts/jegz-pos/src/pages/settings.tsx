@@ -5,6 +5,7 @@ import {
   Banknote,
   Check,
   Download,
+  ImagePlus,
   KeyRound,
   LockKeyhole,
   ReceiptText,
@@ -12,6 +13,7 @@ import {
   Settings as SettingsIcon,
   ShieldCheck,
   Store,
+  Trash2,
   Upload,
   UsersRound,
   WalletCards,
@@ -22,6 +24,8 @@ import {
   useUpdateSettings,
   downloadBackup,
   importBackup,
+  fileToResizedLogoDataUrl,
+  LOGO_ACCEPT_ATTR,
   type Settings,
   type SettingsInput,
   type PosBackup,
@@ -40,6 +44,9 @@ const EMPTY_SETTINGS: SettingsInput = {
   storeName: "",
   storeAddress: "",
   contactNumber: "",
+  shopEmail: "",
+  shopDescription: "",
+  shopLogo: "",
   receiptFooter: "",
   warrantyNote: "",
   lowStockThreshold: 5,
@@ -48,6 +55,7 @@ const EMPTY_SETTINGS: SettingsInput = {
   gcashEnabled: true,
   gcashAccountName: "",
   gcashAccountNumber: "",
+  preOrderMarkup: 20,
 };
 
 function errorMessage(error: unknown, fallback: string) {
@@ -68,6 +76,7 @@ export default function SettingsPage() {
     confirmPassword: "",
   });
   const [isRestoring, setIsRestoring] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
 
   useEffect(() => {
     if (!settings) return;
@@ -75,6 +84,9 @@ export default function SettingsPage() {
       storeName: settings.storeName,
       storeAddress: settings.storeAddress,
       contactNumber: settings.contactNumber,
+      shopEmail: settings.shopEmail,
+      shopDescription: settings.shopDescription,
+      shopLogo: settings.shopLogo,
       receiptFooter: settings.receiptFooter,
       warrantyNote: settings.warrantyNote,
       lowStockThreshold: settings.lowStockThreshold,
@@ -83,6 +95,7 @@ export default function SettingsPage() {
       gcashEnabled: settings.gcashEnabled,
       gcashAccountName: settings.gcashAccountName,
       gcashAccountNumber: settings.gcashAccountNumber,
+      preOrderMarkup: settings.preOrderMarkup,
     };
     setForm(next);
   }, [settings]);
@@ -103,6 +116,37 @@ export default function SettingsPage() {
       toast({ title: "Settings saved", description: "Your POS preferences are now up to date." });
     } catch (error) {
       toast({ title: errorMessage(error, "Failed to save settings"), variant: "destructive" });
+    }
+  };
+
+  const handleLogoChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    setLogoUploading(true);
+    try {
+      const dataUrl = await fileToResizedLogoDataUrl(file);
+      await updateSettings.mutateAsync({ data: { shopLogo: dataUrl } });
+      setField("shopLogo", dataUrl);
+      toast({ title: "Logo updated", description: "Your shop logo is saved and will appear across the POS." });
+    } catch (error) {
+      toast({ title: errorMessage(error, "Could not update logo"), variant: "destructive" });
+    } finally {
+      setLogoUploading(false);
+    }
+  };
+
+  const handleRemoveLogo = async () => {
+    setLogoUploading(true);
+    try {
+      await updateSettings.mutateAsync({ data: { shopLogo: "" } });
+      setField("shopLogo", "");
+      toast({ title: "Logo removed" });
+    } catch (error) {
+      toast({ title: errorMessage(error, "Could not remove logo"), variant: "destructive" });
+    } finally {
+      setLogoUploading(false);
     }
   };
 
@@ -200,6 +244,90 @@ export default function SettingsPage() {
             <CardHeader className="border-b">
               <CardTitle className="flex items-center gap-2 text-base">
                 <Store className="h-4 w-4 text-primary" />
+                Shop Profile
+              </CardTitle>
+              <CardDescription>
+                Your shop identity — shown on the login screen, sidebar, receipts, and printed reports.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-5 p-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-xl border bg-muted/40">
+                  {form.shopLogo ? (
+                    <img src={form.shopLogo} alt="Shop logo" className="h-full w-full object-contain" />
+                  ) : (
+                    <Store className="h-9 w-9 text-muted-foreground" />
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="file"
+                    accept={LOGO_ACCEPT_ATTR}
+                    className="hidden"
+                    id="shop-logo-input"
+                    onChange={handleLogoChange}
+                    disabled={logoUploading}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => document.getElementById("shop-logo-input")?.click()}
+                    disabled={logoUploading}
+                    className="gap-2"
+                  >
+                    <ImagePlus className="h-4 w-4" />
+                    {logoUploading ? "Uploading..." : form.shopLogo ? "Change Logo" : "Upload Logo"}
+                  </Button>
+                  {form.shopLogo && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleRemoveLogo}
+                      disabled={logoUploading}
+                      className="gap-2 text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" /> Remove Logo
+                    </Button>
+                  )}
+                  <p className="w-full text-xs text-muted-foreground">
+                    PNG, JPG, or WEBP (max 5 MB). Resized automatically and saved instantly — no "Save settings" needed for the logo.
+                  </p>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="shop-name">Shop Name</Label>
+                  <Input id="shop-name" value={form.storeName ?? ""} onChange={(e) => setField("storeName", e.target.value)} placeholder="e.g. JEGZ Mobile Repair" disabled={settingsLoading} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="shop-email">Email (optional)</Label>
+                  <Input id="shop-email" type="email" value={form.shopEmail ?? ""} onChange={(e) => setField("shopEmail", e.target.value)} placeholder="shop@example.com" disabled={settingsLoading} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="shop-contact">Contact Number</Label>
+                  <Input id="shop-contact" value={form.contactNumber ?? ""} onChange={(e) => setField("contactNumber", e.target.value)} placeholder="09XX XXX XXXX" disabled={settingsLoading} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="shop-address">Address</Label>
+                  <Input id="shop-address" value={form.storeAddress ?? ""} onChange={(e) => setField("storeAddress", e.target.value)} placeholder="Shop address" disabled={settingsLoading} />
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label htmlFor="shop-description">Shop Description (optional)</Label>
+                  <Textarea id="shop-description" value={form.shopDescription ?? ""} onChange={(e) => setField("shopDescription", e.target.value)} rows={2} placeholder="Short tagline shown on the login screen" disabled={settingsLoading} />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="border-b">
+              <CardTitle className="flex items-center gap-2 text-base">
+                <Store className="h-4 w-4 text-primary" />
                 Store & receipt
               </CardTitle>
               <CardDescription>
@@ -288,6 +416,21 @@ export default function SettingsPage() {
                     onChange={(e) => setField("lowStockThreshold", Math.max(0, Number(e.target.value) || 0))}
                   />
                   <p className="text-xs text-muted-foreground">Products at or below this quantity appear as low stock.</p>
+                </div>
+                <Separator />
+                <div className="space-y-2">
+                  <Label htmlFor="preorder-markup">Pre-order markup (%)</Label>
+                  <Input
+                    id="preorder-markup"
+                    type="number"
+                    min={0}
+                    max={1000}
+                    value={form.preOrderMarkup ?? 20}
+                    onChange={(e) => setField("preOrderMarkup", Math.max(0, Number(e.target.value) || 0))}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Automatic markup applied to items ordered as pre-orders. Final price = base price + base × markup/100.
+                  </p>
                 </div>
                 <Separator />
                 <SettingSwitch
@@ -395,7 +538,7 @@ export default function SettingsPage() {
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Backups include all products, services, technicians, transactions, and inventory data.
+            Backups include all products, services, technicians, transactions, inventory data, and shop settings — including your shop profile and logo.
           </p>
         </CardContent>
       </Card>

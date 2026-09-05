@@ -9,6 +9,7 @@ import {
   serviceService,
   technicianService,
   settingsService,
+  ensureJobNumbers,
 } from './offline-data-services';
 
 const SEED_FLAG = 'db_seeded_v1';
@@ -202,6 +203,13 @@ export async function seedDatabaseIfNeeded() {
     console.log('✓ Demo data seeded successfully');
   } catch (error) {
     console.error('Error seeding database:', error);
+  }
+
+  // Backfill job numbers for any pre-existing transactions (idempotent).
+  try {
+    await ensureJobNumbers();
+  } catch (error) {
+    console.error('Error backfilling job numbers:', error);
   }
 }
 

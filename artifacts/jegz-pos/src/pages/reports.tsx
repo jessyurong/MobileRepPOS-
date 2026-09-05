@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useGetMonthlyReport, useGetTechnicianReport } from "@/lib/offline-api";
+import { useGetMonthlyReport, useGetTechnicianReport, useShopProfile } from "@/lib/offline-api";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -32,10 +32,24 @@ function getMonthOptions() {
   return options;
 }
 
+function escHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => {
+    const map: Record<string, string> = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    };
+    return map[c];
+  });
+}
+
 export default function ReportsPage() {
   const monthOptions = getMonthOptions();
   const [selectedMonth, setSelectedMonth] = useState(monthOptions[0].value);
   const [techPeriod, setTechPeriod] = useState<Period>("month");
+  const shopProfile = useShopProfile();
 
   const { data: monthly, isLoading: monthlyLoading } = useGetMonthlyReport({ month: selectedMonth });
   const { data: techReport = [], isLoading: techLoading } = useGetTechnicianReport({ period: techPeriod });
@@ -68,14 +82,23 @@ export default function ReportsPage() {
       </tr>
     `).join("");
 
-    const productRows = (monthly.topProducts || []).map(p => `<tr><td>${p.name}</td><td align="right">${p.count}</td></tr>`).join("");
-    const serviceRows = (monthly.topServices || []).map(s => `<tr><td>${s.name}</td><td align="right">${s.count}</td></tr>`).join("");
+    const productRows = (monthly.topProducts || []).map(p => `<tr><td>${escHtml(p.name)}</td><td align="right">${p.count}</td></tr>`).join("");
+    const serviceRows = (monthly.topServices || []).map(s => `<tr><td>${escHtml(s.name)}</td><td align="right">${s.count}</td></tr>`).join("");
+
+    const brandName = escHtml(shopProfile.name);
+    const brandLine = [shopProfile.address, shopProfile.contactNumber, shopProfile.email]
+      .filter(Boolean)
+      .map(v => escHtml(v))
+      .join(" &nbsp;|&nbsp; ");
+    const logoHtml = shopProfile.logo
+      ? `<img src="${shopProfile.logo}" alt="${brandName}" style="height:48px;width:auto;max-width:120px;object-fit:contain;"/>`
+      : "";
 
     win.document.write(`
       <!DOCTYPE html>
       <html>
       <head>
-        <title>Monthly Report — ${monthly.monthLabel}</title>
+        <title>${brandName} — Monthly Report</title>
         <style>
           body { font-family: Arial, sans-serif; font-size: 12px; color: #111; margin: 24px; }
           h1 { font-size: 18px; margin-bottom: 4px; }
@@ -92,8 +115,14 @@ export default function ReportsPage() {
         </style>
       </head>
       <body>
-        <h1>JEGZ MOBILE REPAIR</h1>
-        <p>Monthly Report — <strong>${monthly.monthLabel}</strong> &nbsp;|&nbsp; Generated: ${new Date().toLocaleString("en-PH")}</p>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+          ${logoHtml}
+          <div>
+            <h1 style="font-size:18px;margin-bottom:4px;">${brandName}</h1>
+            ${brandLine ? `<p style="font-size:11px;color:#555;margin:0;">${brandLine}</p>` : ""}
+          </div>
+        </div>
+        <p>Monthly Report — <strong>${escHtml(monthly.monthLabel)}</strong> &nbsp;|&nbsp; Generated: ${new Date().toLocaleString("en-PH")}</p>
         <div class="summary">
           <div class="summary-card"><div class="label">Total Sales</div><div class="value">${formatCurrency(monthly.totalSales)}</div></div>
           <div class="summary-card"><div class="label">Total Profit</div><div class="value">${formatCurrency(monthly.totalProfit)}</div></div>
@@ -122,7 +151,7 @@ export default function ReportsPage() {
             <table><thead><tr><th>Service</th><th>Count</th></tr></thead><tbody>${serviceRows || "<tr><td colspan='2'>None</td></tr>"}</tbody></table>
           </div>
         </div>
-        <div class="footer">JEGZ Mobile Repair — Confidential Business Report</div>
+        <div class="footer">${escHtml(shopProfile.description || shopProfile.name)} — Confidential Business Report</div>
         <script>window.onload = function() { window.print(); }</script>
       </body>
       </html>

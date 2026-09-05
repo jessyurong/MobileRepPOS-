@@ -1,145 +1,198 @@
 /**
  * Offline-First Data Services
- * These services handle all CRUD operations using IndexedDB
+ * These services handle all CRUD operations using IndexedDB.
+ *
+ * Job lifecycle:
+ *   saveAsPending -> updatePendingJob (edits) -> completeJob | cancelJob
+ *   completeNewJob (direct walk-in sale without pending step)
+ *
+ * Stock safety:
+ *   - Products carry `reservedStock` for units "held" by active pending jobs.
+ *   - Normal (in-stock) items reserve at save-as-pending and are deducted on completion.
+ *   - Pre-order items NEVER touch inventory stock.
+ *   - One-time custom products (not saved to inventory) never touch inventory stock.
  */
 
 import { localDb } from './local-db';
-import type { LocalRecord } from './local-db';
+import { TRANSACTION_STATUSES } from './db-types';
+import type {
+  AppUser,
+  Backjob,
+  CashDrawerEntry,
+  CountStat,
+  Dashboard,
+  DefectiveItem,
+  EnrichedTransaction,
+  GcashDrawerEntry,
+  JobPaymentStatus,
+  MetaRecord,
+  MonthlyDay,
+  MonthlyReport,
+  NewDefectiveItem,
+  NewTransactionItem,
+  Product,
+  Service,
+  Settings,
+  Technician,
+  TechnicianReportRow,
+  Transaction,
+  TransactionItem,
+  TransactionStatus,
+  TransactionStats,
+} from './db-types';
 
-// Types
-export interface Product extends LocalRecord {
-  id?: number;
-  name: string;
-  category: string;
-  price: number;
-  sellingPrice?: number;
-  cost?: number;
-  stock: number;
-  reorderPoint?: number;
-  sku?: string;
-  deviceType?: string;
-  createdAt?: string;
-  updatedAt?: string;
+export type {
+  AppUser,
+  Backjob,
+  CashDrawerEntry,
+  CountStat,
+  Dashboard,
+  DefectiveItem,
+  EnrichedTransaction,
+  GcashDrawerEntry,
+  JobPaymentStatus,
+  MetaRecord,
+  MonthlyDay,
+  MonthlyReport,
+  NewDefectiveItem,
+  NewTransactionItem,
+  Product,
+  Service,
+  Settings,
+  Technician,
+  TechnicianReportRow,
+  Transaction,
+  TransactionItem,
+  TransactionStatus,
+  TransactionStats,
+  TRANSACTION_STATUSES,
+} from './db-types';
+
+// ─── Shared helpers ─────────────────────────────────────────────────────────
+export const round2 = (n: number) => Math.round(n * 100) / 100;
+
+const nowISO = () => new Date().toISOString();
+
+export function isCompletedStatus(status: unknown): boolean {
+  return status === 'completed' || status === 'complete' || status === 'done';
 }
 
-export interface Service extends LocalRecord {
-  id?: number;
-  name: string;
-  type: string;
-  price: number;
-  cost?: number;
-  duration?: number;
-  createdAt?: string;
-  updatedAt?: string;
+export function isCancelledStatus(status: unknown): boolean {
+  return status === 'cancelled' || status === 'canceled';
 }
 
-export interface Technician extends LocalRecord {
-  id?: number;
-  name: string;
-  email?: string;
-  phone?: string;
-  role?: string;
-  specialization?: string;
-  jobsDone?: number;
-  totalSales?: number;
-  createdAt?: string;
-  updatedAt?: string;
+export function isOpenStatus(status: unknown): boolean {
+  return !isCompletedStatus(status) && !isCancelledStatus(status);
 }
 
-export interface TransactionItem extends LocalRecord {
-  id?: number;
-  transactionId: number;
-  type: 'product' | 'service';
-  refId: number;
-  name: string;
-  quantity: number;
-  price: number;
-  subtotal: number;
-  createdAt?: string;
+export function normalizeStatus(status: unknown): TransactionStatus {
+  if (status === 'complete' || status === 'done') return 'completed';
+  if (status === 'in-progress' || status === 'in progress') return 'in_progress';
+  if (status === 'ready') return 'ready_for_pickup';
+  if (status === 'cancelled' || status === 'canceled') return 'cancelled';
+  if (TRANSACTION_STATUSES.includes(status as TransactionStatus)) return status as TransactionStatus;
+  return 'pending';
 }
 
-export interface Transaction extends LocalRecord {
-  id?: number;
-  customer?: string;
-  unit?: string;
-  technicianId?: number;
-  paymentMethod: 'cash' | 'gcash';
-  status: 'completed' | 'pending' | 'cancelled';
-  total: number;
-  notes?: string;
-  createdAt?: string;
-  updatedAt?: string;
+export function paymentStatusFor(total: number | undefined, amountPaid: number | undefined): JobPaymentStatus {
+  const t = total || 0;
+  const paid = amountPaid || 0;
+  if (paid >= t) return 'paid';
+  if (paid > 0) return 'partial';
+  return 'unpaid';
 }
 
-export interface DefectiveItem extends LocalRecord {
-  id?: number;
-  productId: number;
-  productName?: string;
-  reason: string;
-  quantity: number;
-  costPerUnit?: number;
-  totalLoss?: number;
-  createdAt?: string;
+/** Units actually available to sell right now (stock minus reserved). */
+export function availableStockOf(product: Pick<Product, 'stock' | 'reservedStock'>): number {
+  return Math.max(0, (product.stock ?? 0) - (product.reservedStock ?? 0));
 }
 
-export interface Backjob extends LocalRecord {
-  id?: number;
-  customer: string;
-  phone?: string;
-  unit?: string;
-  technicianId?: number;
-  technicianName?: string;
-  description?: string;
-  issue?: string;
-  originalRepairDate?: string;
-  cause?: string;
-  status: 'pending' | 'in_progress' | 'done' | 'in-progress' | 'completed';
-  withinWarranty?: boolean;
-  createdAt?: string;
-  updatedAt?: string;
+/** Item touches physical inventory stock on completion. */
+export function isStockReducingItem(item: {
+  type?: string;
+  isPreOrder?: boolean;
+  isCustom?: boolean;
+  savedToList?: boolean;
+}): boolean {
+  if (item.type !== 'product') return false;
+  if (item.isPreOrder) return false;
+  // One-time custom products never created a stock record.
+  if (item.isCustom && !item.savedToList) return false;
+  return true;
 }
 
-export interface CashDrawerEntry extends LocalRecord {
-  id?: number;
-  type: 'opening' | 'closing' | 'transaction' | 'adjustment' | 'deposit' | 'withdraw' | 'sale';
-  amount: number;
-  notes?: string;
-  createdAt?: string;
+/** Item carries a real inventory reference id (not a synthetic custom id). */
+function hasInventoryRef(item: { type?: string; refId?: number; isPreOrder?: boolean; isCustom?: boolean; savedToList?: boolean }): boolean {
+  if (!isStockReducingItem(item)) return false;
+  const refId = Number(item.refId);
+  return Number.isFinite(refId) && refId > 0;
 }
 
-export interface GcashDrawerEntry extends LocalRecord {
-  id?: number;
-  type: 'opening' | 'closing' | 'transaction' | 'adjustment' | 'deposit' | 'withdraw' | 'sale';
-  amount: number;
-  notes?: string;
-  createdAt?: string;
+/** Best-effort gross profit from item costs; falls back to a 20% margin estimate. */
+export function getJobProfit(items: TransactionItem[], total?: number): number {
+  let costedProfit = 0;
+  let hasCostData = false;
+  for (const item of items) {
+    const qty = item.quantity || 1;
+    if (typeof item.cost === 'number' && typeof item.price === 'number') {
+      costedProfit += (item.price - item.cost) * qty;
+      hasCostData = true;
+    } else if (item.type === 'product' && typeof item.price === 'number' && typeof item.cost === 'undefined') {
+      // products without recorded cost cannot contribute to known profit
+    }
+  }
+  if (hasCostData) return round2(costedProfit);
+  return round2((total || 0) * 0.2);
 }
 
-export interface Settings extends LocalRecord {
-  id?: number;
-  key: string;
-  value: any;
-  createdAt?: string;
-  updatedAt?: string;
+// ─── Job number generator ───────────────────────────────────────────────────
+function yyyymmdd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
 }
 
-export interface Dashboard {
-  periodLabel: string;
-  periodSales: number;
-  periodProfit: number;
-  periodTransactions: number;
-  cashCount: number;
-  gcashCount: number;
-  lowStockCount: number;
-  pendingCount: number;
-  salesTrend: Array<{ date: string; sales: number; profit: number }>;
-  topServices: Array<{ name: string; count: number; revenue: number }>;
-  topProducts: Array<{ name: string; count: number; revenue: number }>;
-  recentTransactions: Transaction[];
-  lowStockProducts: Product[];
+/**
+ * Generate a unique human-readable job number: JOB-YYYYMMDD-NNNN.
+ * Uniqueness is guaranteed by a per-day counter stored in `meta`,
+ * seeded from any existing job numbers for today.
+ */
+export async function generateJobNumber(): Promise<string> {
+  const dateKey = yyyymmdd(new Date());
+  const counterKey = `jobSeq_${dateKey}`;
+  return localDb.transaction('rw', localDb.meta, localDb.transactions, async () => {
+    const meta = await localDb.meta.get(counterKey);
+    let seq = typeof meta?.value === 'number' ? meta.value : 0;
+    if (!meta) {
+      const prefix = `JOB-${dateKey}-`;
+      const existing = await localDb.transactions.toArray();
+      let max = 0;
+      for (const tx of existing) {
+        const jn = String(tx.jobNumber || '');
+        if (jn.startsWith(prefix)) {
+          const n = parseInt(jn.slice(prefix.length), 10);
+          if (Number.isFinite(n) && n > max) max = n;
+        }
+      }
+      seq = max;
+    }
+    seq += 1;
+    await localDb.meta.put({ key: counterKey, value: seq, updatedAt: nowISO() } as any);
+    return `JOB-${dateKey}-${String(seq).padStart(4, '0')}`;
+  });
 }
 
-// Product Services
+/** Backfill missing job numbers for records created before this feature existed. */
+export async function ensureJobNumbers(): Promise<void> {
+  const missing = await localDb.transactions.filter(tx => !tx.jobNumber).toArray();
+  for (const tx of missing) {
+    const jobNumber = await generateJobNumber();
+    await localDb.transactions.update(tx.id, { jobNumber });
+  }
+}
+
+// ─── Product Services ───────────────────────────────────────────────────────
 export const productService = {
   async list(): Promise<Product[]> {
     return localDb.products.toArray();
@@ -150,33 +203,34 @@ export const productService = {
   },
 
   async create(product: Omit<Product, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
+    const now = nowISO();
     return localDb.products.add({
       ...product,
+      reservedStock: (product as any).reservedStock ?? 0,
       createdAt: now,
-      updatedAt: now,
-    } as any);
-  },
-
-  async update(id: number, product: Partial<Product>): Promise<void> {
-    const now = new Date().toISOString();
-    return localDb.products.update(id, {
-      ...product,
       updatedAt: now,
     });
   },
 
+  async update(id: number, product: Partial<Product>): Promise<void> {
+    await localDb.products.update(id, { ...product, updatedAt: nowISO() });
+  },
+
   async delete(id: number): Promise<void> {
-    return localDb.products.delete(id);
+    await localDb.products.delete(id);
   },
 
   async getLowStock(reorderPoint?: number): Promise<Product[]> {
-    const all = await localDb.products.toArray();
-    return all.filter(p => (p.stock ?? 0) <= (reorderPoint ?? p.reorderPoint ?? 10));
+    const all = await localStorageSafeProducts();
+    return all.filter(p => availableStockOf(p) <= (reorderPoint ?? p.reorderPoint ?? 10));
   },
 };
 
-// Service Services
+async function localStorageSafeProducts(): Promise<Product[]> {
+  return localDb.products.toArray();
+}
+
+// ─── Service Services ───────────────────────────────────────────────────────
 export const serviceService = {
   async list(): Promise<Service[]> {
     return localDb.services.toArray();
@@ -187,33 +241,25 @@ export const serviceService = {
   },
 
   async create(service: Omit<Service, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
-    return localDb.services.add({
-      ...service,
-      createdAt: now,
-      updatedAt: now,
-    } as any);
+    const now = nowISO();
+    return localDb.services.add({ ...service, createdAt: now, updatedAt: now });
   },
 
   async update(id: number, service: Partial<Service>): Promise<void> {
-    const now = new Date().toISOString();
-    return localDb.services.update(id, {
-      ...service,
-      updatedAt: now,
-    });
+    await localDb.services.update(id, { ...service, updatedAt: nowISO() });
   },
 
   async delete(id: number): Promise<void> {
-    return localDb.services.delete(id);
+    await localDb.services.delete(id);
   },
 };
 
-// Technician Services
+// ─── Technician Services ────────────────────────────────────────────────────
 export const technicianService = {
   async list(): Promise<Technician[]> {
     const list = await localDb.technicians.toArray();
     const txs = await localDb.transactions.toArray();
-    const completed = txs.filter(tx => tx.status === 'completed' || (tx.status as string) === 'complete');
+    const completed = txs.filter(tx => isCompletedStatus(tx.status));
     return list.map(t => {
       const techTxs = completed.filter(tx => tx.technicianId === t.id);
       const jobsDone = techTxs.length;
@@ -232,30 +278,126 @@ export const technicianService = {
   },
 
   async create(technician: Omit<Technician, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
-    return localDb.technicians.add({
-      ...technician,
-      createdAt: now,
-      updatedAt: now,
-    } as any);
+    const now = nowISO();
+    return localDb.technicians.add({ ...technician, createdAt: now, updatedAt: now });
   },
 
   async update(id: number, technician: Partial<Technician>): Promise<void> {
-    const now = new Date().toISOString();
-    return localDb.technicians.update(id, {
-      ...technician,
-      updatedAt: now,
-    });
+    await localDb.technicians.update(id, { ...technician, updatedAt: nowISO() });
   },
 
   async delete(id: number): Promise<void> {
-    return localDb.technicians.delete(id);
+    await localDb.technicians.delete(id);
   },
 };
 
-// Transaction Services
+// ─── Transaction Services ───────────────────────────────────────────────────
+export interface TransactionListOptions {
+  period?: 'today' | 'week' | 'month' | 'all';
+  search?: string;
+  status?: string;
+}
+
+function periodStart(period: TransactionListOptions['period']): Date | null {
+  const now = new Date();
+  switch (period) {
+    case 'today':
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    case 'week':
+      return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    case 'month':
+      return new Date(now.getFullYear(), now.getMonth(), 1);
+    default:
+      return null;
+  }
+}
+
+const isPhoneString = (value: unknown): boolean =>
+  typeof value === 'string' && /^[0-9+\-\s()]{7,}$/.test(value.trim());
+
+function enrichTransaction(
+  tx: Transaction,
+  items: TransactionItem[],
+  techMap: Map<number, string>,
+): EnrichedTransaction {
+  const status = normalizeStatus(tx.status);
+  const customerName = tx.customerName || tx.customer || 'Walk-in';
+  let customerPhone = tx.customerPhone;
+  if (!customerPhone && isPhoneString(tx.unit)) customerPhone = tx.unit;
+  let phoneModel = tx.phoneModel;
+  let phoneBrand = tx.phoneBrand;
+  if (!phoneModel && tx.unit && !isPhoneString(tx.unit)) {
+    // Legacy records may have stored the unit name in `unit`.
+    phoneModel = String(tx.unit);
+  }
+  const txItems = items
+    .filter(item => item.transactionId === tx.id)
+    .sort((a, b) => (a.id || 0) - (b.id || 0));
+  const hasPreOrder = tx.isPreOrder === true || txItems.some(item => item.isPreOrder);
+  const total = tx.totalAmount ?? tx.total ?? 0;
+  return {
+    ...tx,
+    status,
+    customerName,
+    customer: customerName,
+    customerPhone,
+    unit: customerPhone || tx.unit,
+    phoneModel,
+    phoneBrand,
+    total,
+    totalAmount: total,
+    technicianName: (tx.technicianName as string) || (tx.technicianId ? techMap.get(tx.technicianId) : undefined) || 'None',
+    items: txItems,
+    profit: getJobProfit(txItems, total),
+    hasPreOrder,
+    displayCustomer: customerName,
+    displayPhone: customerPhone || '',
+    displayModel: [phoneBrand, phoneModel].filter(Boolean).join(' '),
+  };
+}
+
+async function buildLists() {
+  const [txs, items, techs] = await Promise.all([
+    localDb.transactions.toArray(),
+    localDb.transactionItems.toArray(),
+    localDb.technicians.toArray(),
+  ]);
+  const techMap = new Map(techs.map(t => [t.id, t.name]));
+  return { txs, items, techMap };
+}
+
 export const transactionService = {
-  async list(): Promise<Transaction[]> {
+  async list(opts?: TransactionListOptions): Promise<EnrichedTransaction[]> {
+    const { txs, items, techMap } = await buildLists();
+    const start = periodStart(opts?.period);
+    let filtered = start ? txs.filter(tx => new Date(tx.createdAt || 0) >= start) : txs;
+
+    if (opts?.status) {
+      const wanted = normalizeStatus(opts.status);
+      filtered = filtered.filter(tx => normalizeStatus(tx.status) === wanted);
+    }
+
+    if (opts?.search) {
+      const term = opts.search.toLowerCase().trim();
+      if (term) {
+        filtered = filtered.filter(tx => {
+          const customerName = tx.customerName || tx.customer || '';
+          const phone = tx.customerPhone || (isPhoneString(tx.unit) ? tx.unit : '') || '';
+          const model = `${tx.phoneBrand || ''} ${tx.phoneModel || ''}`;
+          const haystack = [customerName, phone, model, tx.jobNumber || '', String(tx.id)]
+            .join(' ')
+            .toLowerCase();
+          return haystack.includes(term);
+        });
+      }
+    }
+
+    return filtered
+      .map(tx => enrichTransaction(tx, items, techMap))
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  },
+
+  async listRaw(): Promise<Transaction[]> {
     return localDb.transactions.toArray();
   },
 
@@ -263,149 +405,140 @@ export const transactionService = {
     return localDb.transactions.get(id);
   },
 
-  async create(transaction: Omit<Transaction, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
-    return localDb.transactions.add({
-      ...transaction,
-      createdAt: now,
-      updatedAt: now,
-    } as any);
+  async getEnriched(id: number): Promise<EnrichedTransaction | undefined> {
+    const { txs, items, techMap } = await buildLists();
+    const tx = txs.find(t => t.id === id);
+    return tx ? enrichTransaction(tx, items, techMap) : undefined;
   },
 
-  async createWithItems(
-    transaction: Omit<Transaction, 'id'>,
-    items: Array<Omit<TransactionItem, 'id' | 'transactionId'>>,
-  ): Promise<number> {
-    const now = new Date().toISOString();
+  async create(transaction: Omit<Transaction, 'id'>): Promise<number> {
+    const now = nowISO();
+    return localDb.transactions.add({ ...transaction, createdAt: now, updatedAt: now });
+  },
 
-    // Create the transaction
+  /** Legacy direct completion. Routes through the full job flow when possible. */
+  async createWithItems(transaction: Omit<Transaction, 'id'>, items: NewTransactionItem[]): Promise<number> {
+    const jobNumber = transaction.jobNumber || (await generateJobNumber());
+    const status = normalizeStatus(transaction.status);
+    const now = nowISO();
+
     const txId = await localDb.transactions.add({
       ...transaction,
+      status,
+      jobNumber,
+      customerName: (transaction.customerName as string) || transaction.customer || 'Walk-in',
+      customer: (transaction.customerName as string) || transaction.customer || 'Walk-in',
+      customerPhone: (transaction.customerPhone as string) || transaction.unit,
+      unit: (transaction.customerPhone as string) || transaction.unit,
+      totalAmount: transaction.totalAmount ?? transaction.total ?? 0,
       createdAt: now,
       updatedAt: now,
     } as any);
 
-    // Create transaction items
     for (const item of items) {
-      await localDb.transactionItems.add({
-        ...item,
-        transactionId: txId,
-        createdAt: now,
-      } as any);
-
-      // Update product stock if it's a product
-      if (item.type === 'product') {
-        const product = await productService.get(item.refId);
+      await localDb.transactionItems.add({ ...item, transactionId: txId, createdAt: now } as any);
+      if (hasInventoryRef(item)) {
+        const product = await localDb.products.get(item.refId);
         if (product) {
-          await productService.update(item.refId, {
-            stock: (product.stock ?? 0) - (item.quantity ?? 0),
+          await localDb.products.update(item.refId, {
+            stock: Math.max(0, (product.stock ?? 0) - (item.quantity || 0)),
           });
         }
       }
     }
-
     return txId;
   },
 
   async update(id: number, transaction: Partial<Transaction>): Promise<void> {
-    const now = new Date().toISOString();
-    return localDb.transactions.update(id, {
-      ...transaction,
-      updatedAt: now,
-    });
+    await localDb.transactions.update(id, { ...transaction, updatedAt: nowISO() });
   },
 
   async delete(id: number): Promise<void> {
-    return localDb.transactions.delete(id);
+    await localDb.transactions.delete(id);
   },
 
-  async getByDateRange(startDate: Date, endDate: Date): Promise<Transaction[]> {
-    const all = await localDb.transactions.toArray();
-    return all.filter(tx => {
-      const txDate = new Date(tx.createdAt || 0);
-      return txDate >= startDate && txDate <= endDate;
-    });
+  async getByDateRange(startDate: Date, endDate: Date): Promise<EnrichedTransaction[]> {
+    const { txs, items, techMap } = await buildLists();
+    return txs
+      .filter(tx => {
+        const txDate = new Date(tx.createdAt || 0);
+        return txDate >= startDate && txDate <= endDate;
+      })
+      .map(tx => enrichTransaction(tx, items, techMap));
   },
 
   async getByStatus(status: string): Promise<Transaction[]> {
-    return localDb.transactions.where('status').equals(status).toArray();
+    const wanted = normalizeStatus(status);
+    return localDb.transactions.filter(tx => normalizeStatus(tx.status) === wanted).toArray();
   },
 
-  async getStats(period: 'today' | 'week' | 'month' | 'year'): Promise<any> {
-    const now = new Date();
-    let startDate: Date;
-
-    switch (period) {
-      case 'today':
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        break;
-      case 'week':
-        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        break;
-      case 'month':
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-        break;
-      case 'year':
-        startDate = new Date(now.getFullYear(), 0, 1);
-        break;
+  async getStats(period: 'today' | 'week' | 'month' | 'year'): Promise<TransactionStats> {
+    const txs = await localDb.transactions.toArray();
+    const items = await localDb.transactionItems.toArray();
+    const itemIndex = new Map<number, TransactionItem[]>();
+    for (const item of items) {
+      const arr = itemIndex.get(item.transactionId) || [];
+      arr.push(item);
+      itemIndex.set(item.transactionId, arr);
     }
 
-    const txs = await this.getByDateRange(startDate, now);
-    const completed = txs.filter(tx => tx.status === 'completed' || (tx.status as string) === 'complete');
-    const pending = txs.filter(tx => tx.status === 'pending');
+    const start = (() => {
+      const now = new Date();
+      switch (period) {
+        case 'today': return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        case 'week': return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        case 'month': return new Date(now.getFullYear(), now.getMonth(), 1);
+        case 'year': return new Date(now.getFullYear(), 0, 1);
+      }
+    })();
 
-    const totalSales = completed.reduce((sum, tx) => sum + (tx.total || 0), 0);
-    const totalProfit = totalSales * 0.2;
+    const periodTxs = txs.filter(tx => new Date(tx.createdAt || 0) >= start);
+    const completed = periodTxs.filter(tx => isCompletedStatus(tx.status));
+    const open = periodTxs.filter(tx => isOpenStatus(tx.status));
+
+    const totalSales = round2(completed.reduce((sum, tx) => sum + ((tx.totalAmount ?? tx.total) || 0), 0));
+    const totalProfit = round2(
+      completed.reduce((sum, tx) => sum + getJobProfit(itemIndex.get(tx.id) || [], tx.totalAmount ?? tx.total), 0),
+    );
     const count = completed.length;
     const cashCount = completed.filter(tx => tx.paymentMethod === 'cash').length;
     const gcashCount = completed.filter(tx => tx.paymentMethod === 'gcash').length;
     const avgPerTransaction = count > 0 ? totalSales / count : 0;
 
-    const allItems = await transactionItemService.list();
-    const txItems = completed
-      .flatMap(tx => tx.id ? allItems.filter(item => item.transactionId === tx.id) : [])
-      .filter(item => item);
+    const txItems = completed.flatMap(tx => itemIndex.get(tx.id) || []);
 
     const topServicesMap = new Map<string, number>();
-    txItems
-      .filter(item => item.type === 'service')
-      .forEach(item => {
-        topServicesMap.set(item.name, (topServicesMap.get(item.name) || 0) + (item.quantity || 1));
-      });
-    const topServices = Array.from(topServicesMap.entries())
+    txItems.filter(i => i.type === 'service').forEach(i => topServicesMap.set(i.name, (topServicesMap.get(i.name) || 0) + (i.quantity || 1)));
+    const topServices: CountStat[] = Array.from(topServicesMap.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
     const topProductsMap = new Map<string, number>();
-    txItems
-      .filter(item => item.type === 'product')
-      .forEach(item => {
-        topProductsMap.set(item.name, (topProductsMap.get(item.name) || 0) + (item.quantity || 1));
-      });
-    const topProducts = Array.from(topProductsMap.entries())
+    txItems.filter(i => i.type === 'product').forEach(i => topProductsMap.set(i.name, (topProductsMap.get(i.name) || 0) + (i.quantity || 1)));
+    const topProducts: CountStat[] = Array.from(topProductsMap.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
 
     const topModelsMap = new Map<string, number>();
     completed.forEach(tx => {
-      const unit = (tx.unit || '').trim();
-      if (unit) {
-        topModelsMap.set(unit, (topModelsMap.get(unit) || 0) + 1);
-      }
+      const model = [tx.phoneBrand, tx.phoneModel].filter(Boolean).join(' ').trim();
+      if (model) topModelsMap.set(model, (topModelsMap.get(model) || 0) + 1);
     });
-    const topModels = Array.from(topModelsMap.entries())
+    const topModels: CountStat[] = Array.from(topModelsMap.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
+
+    const preOrderJobs = periodTxs.filter(tx => tx.isPreOrder === true || (itemIndex.get(tx.id) || []).some(i => i.isPreOrder));
 
     return {
       total: totalSales,
       totalSales,
       totalProfit,
       count,
-      pending: pending.length,
+      pending: open.length,
       cashCount,
       gcashCount,
       avgPerTransaction,
@@ -413,14 +546,499 @@ export const transactionService = {
       topServices,
       topProducts,
       paymentMethods: {
-        cash: completed.filter(tx => tx.paymentMethod === 'cash').reduce((sum, tx) => sum + (tx.total || 0), 0),
-        gcash: completed.filter(tx => tx.paymentMethod === 'gcash').reduce((sum, tx) => sum + (tx.total || 0), 0),
+        cash: round2(completed.filter(tx => tx.paymentMethod === 'cash').reduce((sum, tx) => sum + ((tx.totalAmount ?? tx.total) || 0), 0)),
+        gcash: round2(completed.filter(tx => tx.paymentMethod === 'gcash').reduce((sum, tx) => sum + ((tx.totalAmount ?? tx.total) || 0), 0)),
       },
+      pendingJobs: open.length,
+      depositTotal: round2(open.reduce((sum, tx) => sum + (tx.amountPaid || 0), 0)),
+      outstandingTotal: round2(open.reduce((sum, tx) => sum + Math.max(0, ((tx.totalAmount ?? tx.total) || 0) - (tx.amountPaid || 0)), 0)),
+      preOrderCount: preOrderJobs.length,
+      preOrderSales: round2(preOrderJobs.reduce((sum, tx) => {
+        if (tx.isPreOrder || (itemIndex.get(tx.id) || []).some(i => i.isPreOrder)) {
+          if (isCompletedStatus(tx.status)) return sum + ((tx.totalAmount ?? tx.total) || 0);
+        }
+        return sum;
+      }, 0)),
     };
   },
 };
 
-// Transaction Item Services
+// ─── Job services (pending / complete / deposits) ───────────────────────────
+export interface JobItemInput {
+  type: 'product' | 'service';
+  refId: number;
+  name: string;
+  quantity: number;
+  price: number;
+  subtotal: number;
+  cost?: number;
+  isPreOrder?: boolean;
+  basePrice?: number;
+  markupPercentage?: number;
+  markupAmount?: number;
+  isCustom?: boolean;
+  savedToList?: boolean;
+  notes?: string;
+}
+
+export interface JobInput {
+  customerName?: string;
+  customerPhone?: string;
+  phoneBrand?: string;
+  phoneModel?: string;
+  technicianId?: number;
+  technicianName?: string;
+  notes?: string;
+  customerComplaint?: string;
+  diagnosis?: string;
+  technicianNotes?: string;
+  paymentMethod?: 'cash' | 'gcash';
+  items: JobItemInput[];
+  total: number;
+  amountPaid?: number;
+  depositNote?: string;
+  isPreOrder?: boolean;
+}
+
+export interface JobCompletionResult {
+  id: number;
+  jobNumber: string;
+  customerName: string;
+  customerPhone?: string;
+  phoneBrand?: string;
+  phoneModel?: string;
+  technicianName?: string;
+  items: TransactionItem[];
+  total: number;
+  amountPaid: number;
+  remainingBalance: number;
+  paymentMethod: 'cash' | 'gcash';
+  cashReceived?: number;
+  change?: number;
+  createdAt: string;
+  status: TransactionStatus;
+}
+
+function txRecordFromJobInput(input: JobInput): Omit<Transaction, 'id'> {
+  const customerName = (input.customerName || 'Walk-in').trim() || 'Walk-in';
+  const customerPhone = input.customerPhone?.trim() || undefined;
+  const phoneBrand = input.phoneBrand?.trim() || undefined;
+  const phoneModel = input.phoneModel?.trim() || undefined;
+  const total = round2(input.total);
+  const amountPaid = input.amountPaid && input.amountPaid > 0 ? round2(input.amountPaid) : 0;
+  const isPreOrder = Boolean(input.isPreOrder) || input.items.some(i => i.isPreOrder);
+  return {
+    customerName,
+    customer: customerName,
+    customerPhone,
+    unit: customerPhone,
+    phoneBrand,
+    phoneModel,
+    technicianId: input.technicianId,
+    technicianName: input.technicianName,
+    notes: input.notes || undefined,
+    customerComplaint: input.customerComplaint || undefined,
+    diagnosis: input.diagnosis || undefined,
+    technicianNotes: input.technicianNotes || undefined,
+    total,
+    totalAmount: total,
+    amountPaid,
+    remainingBalance: Math.max(0, total - amountPaid),
+    paymentStatus: paymentStatusFor(total, amountPaid),
+    paymentMethod: amountPaid > 0 ? (input.paymentMethod || 'cash') : undefined,
+    isPreOrder,
+    status: 'pending' as TransactionStatus,
+  };
+}
+
+/** Reserve (delta=1) or release (delta=-1) stock for a job's in-stock items. */
+async function adjustReservations(items: Array<{ type?: string; refId?: number; quantity?: number; isPreOrder?: boolean; isCustom?: boolean; savedToList?: boolean }>, delta: number): Promise<void> {
+  const byProduct = new Map<number, number>();
+  for (const item of items) {
+    if (!hasInventoryRef(item)) continue;
+    const refId = Number(item.refId);
+    byProduct.set(refId, (byProduct.get(refId) || 0) + (item.quantity || 0));
+  }
+  for (const [refId, qty] of byProduct) {
+    const product = await localDb.products.get(refId);
+    if (!product) continue;
+    const reserved = Math.max(0, (product.reservedStock || 0) + delta * qty);
+    await localDb.products.update(refId, { reservedStock: reserved });
+  }
+}
+
+/** After releasing a job's own reservation, check against physical stock. */
+async function validateStockForReduction(
+  items: Array<{ type?: string; refId?: number; quantity?: number; isPreOrder?: boolean; isCustom?: boolean; savedToList?: boolean }>,
+): Promise<{ ok: boolean; message?: string }> {
+  const settingsRaw = await localDb.settings.toArray();
+  const allowNegative = settingsRaw.some(s => s.key === 'allowNegativeStock' && s.value === true);
+  const byProduct = new Map<number, number>();
+  for (const item of items) {
+    if (!hasInventoryRef(item)) continue;
+    byProduct.set(Number(item.refId), (byProduct.get(Number(item.refId)) || 0) + (item.quantity || 0));
+  }
+  for (const [refId, qty] of byProduct) {
+    const product = await localDb.products.get(refId);
+    if (!product) continue;
+    const stock = product.stock ?? 0;
+    if (stock < qty && !allowNegative) {
+      return { ok: false, message: `Insufficient stock for "${product.name}" — only ${Math.max(0, stock)} unit(s) available.` };
+    }
+  }
+  return { ok: true };
+}
+
+async function reduceStock(items: Array<{ type?: string; refId?: number; quantity?: number; isPreOrder?: boolean; isCustom?: boolean; savedToList?: boolean }>): Promise<void> {
+  const byProduct = new Map<number, number>();
+  for (const item of items) {
+    if (!hasInventoryRef(item)) continue;
+    byProduct.set(Number(item.refId), (byProduct.get(Number(item.refId)) || 0) + (item.quantity || 0));
+  }
+  for (const [refId, qty] of byProduct) {
+    const product = await localDb.products.get(refId);
+    if (!product) continue;
+    await localDb.products.update(refId, { stock: Math.max(0, (product.stock ?? 0) - qty) });
+  }
+}
+
+async function addDrawerSaleEntry(method: 'cash' | 'gcash', amount: number, note: string): Promise<void> {
+  const row = { type: 'sale' as const, amount: round2(amount), note, notes: note, createdAt: nowISO() };
+  if (method === 'gcash') {
+    await localDb.gcashDrawerEntries.add(row as any);
+  } else {
+    await localDb.cashDrawerEntries.add(row as any);
+  }
+}
+
+async function addDrawerDepositEntry(method: 'cash' | 'gcash', amount: number, note: string): Promise<void> {
+  const row = { type: 'deposit' as const, amount: round2(amount), note, notes: note, createdAt: nowISO() };
+  if (method === 'gcash') {
+    await localDb.gcashDrawerEntries.add(row as any);
+  } else {
+    await localDb.cashDrawerEntries.add(row as any);
+  }
+}
+
+/** Tables all job mutations touch. */
+const JOB_TABLES = [
+  localDb.meta,
+  localDb.transactions,
+  localDb.transactionItems,
+  localDb.products,
+  localDb.cashDrawerEntries,
+  localDb.gcashDrawerEntries,
+  localDb.settings,
+  localDb.technicians,
+];
+
+async function createJobItems(transactionId: number, items: JobItemInput[]): Promise<void> {
+  const now = nowISO();
+  for (const item of items) {
+    await localDb.transactionItems.add({
+      type: item.type,
+      refId: item.refId,
+      name: item.name,
+      quantity: item.quantity,
+      price: item.price,
+      subtotal: item.subtotal,
+      cost: item.cost,
+      isPreOrder: item.isPreOrder || false,
+      basePrice: item.basePrice,
+      markupPercentage: item.markupPercentage,
+      markupAmount: item.markupAmount,
+      isCustom: item.isCustom || false,
+      savedToList: item.savedToList || false,
+      notes: item.notes,
+      transactionId,
+      createdAt: now,
+    } as any);
+  }
+}
+
+async function toJobItemInputs(items: TransactionItem[]): Promise<JobItemInput[]> {
+  return items.map(i => ({
+    type: i.type,
+    refId: i.refId,
+    name: i.name,
+    quantity: i.quantity,
+    price: i.price,
+    subtotal: i.subtotal,
+    cost: i.cost,
+    isPreOrder: i.isPreOrder,
+    basePrice: i.basePrice,
+    markupPercentage: i.markupPercentage,
+    markupAmount: i.markupAmount,
+    isCustom: i.isCustom,
+    savedToList: i.savedToList,
+    notes: i.notes,
+  }));
+}
+
+export const jobService = {
+  /** Save the current POS job as a pending transaction (status pending). */
+  async saveAsPending(input: JobInput): Promise<{ id: number; jobNumber: string }> {
+    return localDb.transaction('rw', JOB_TABLES, async () => {
+      const jobNumber = await generateJobNumber();
+      const now = nowISO();
+      const record = txRecordFromJobInput(input);
+      const id = await localDb.transactions.add({
+        ...record,
+        status: 'pending',
+        jobNumber,
+        createdAt: now,
+        updatedAt: now,
+      } as any);
+
+      await createJobItems(id, input.items);
+      await adjustReservations(input.items, 1);
+
+      const amountPaid = record.amountPaid || 0;
+      if (amountPaid > 0) {
+        await addDrawerDepositEntry(record.paymentMethod || 'cash', amountPaid, `Deposit — ${jobNumber} (${record.customerName})`);
+      }
+      return { id, jobNumber };
+    });
+  },
+
+  /** Re-open / edit an existing pending job. Never creates a duplicate. */
+  async updatePendingJob(
+    id: number,
+    input: JobInput,
+    opts?: { additionalDeposit?: number; additionalDepositMethod?: 'cash' | 'gcash'; status?: TransactionStatus },
+  ): Promise<{ id: number; jobNumber: string }> {
+    return localDb.transaction('rw', JOB_TABLES, async () => {
+      const existing = await localDb.transactions.get(id);
+      if (!existing) throw new Error('Job not found');
+      if (!isOpenStatus(existing.status)) throw new Error('Only open jobs can be edited');
+
+      const oldItems = await localDb.transactionItems.where('transactionId').equals(id).toArray();
+      const jobNumber = existing.jobNumber || (await generateJobNumber());
+      const now = nowISO();
+
+      // Release old reservations, replace items, reserve new.
+      await adjustReservations(oldItems, -1);
+      for (const item of oldItems) await localDb.transactionItems.delete(item.id);
+      await createJobItems(id, input.items);
+      await adjustReservations(input.items, 1);
+
+      const record = txRecordFromJobInput({ ...input, amountPaid: undefined });
+      const total = record.totalAmount ?? 0;
+      const additionalDeposit = opts?.additionalDeposit && opts.additionalDeposit > 0 ? round2(opts.additionalDeposit) : 0;
+      const amountPaid = round2((existing.amountPaid || 0) + additionalDeposit);
+      const method = additionalDeposit > 0 ? (opts?.additionalDepositMethod || existing.paymentMethod || input.paymentMethod || 'cash') : undefined;
+
+      await localDb.transactions.update(id, {
+        ...record,
+        total,
+        totalAmount: total,
+        jobNumber,
+        status: normalizeStatus(opts?.status) || existing.status,
+        amountPaid,
+        remainingBalance: Math.max(0, total - amountPaid),
+        paymentStatus: paymentStatusFor(total, amountPaid),
+        paymentMethod: method || existing.paymentMethod,
+        isPreOrder: record.isPreOrder || existing.isPreOrder,
+        updatedAt: now,
+      } as any);
+
+      if (additionalDeposit > 0) {
+        await addDrawerDepositEntry(method || 'cash', additionalDeposit, `Deposit — ${jobNumber} (${record.customerName})`);
+      }
+
+      return { id, jobNumber };
+    });
+  },
+
+  /** Finalize an existing pending job: completes it, deducts stock, records payment. */
+  async completeJob(
+    id: number,
+    opts: { paymentMethod: 'cash' | 'gcash'; cashReceived?: number },
+  ): Promise<JobCompletionResult> {
+    return localDb.transaction('rw', JOB_TABLES, async () => {
+      const tx = await localDb.transactions.get(id);
+      if (!tx) throw new Error('Job not found');
+      if (isCompletedStatus(tx.status)) throw new Error('Job is already completed');
+
+      const items = (await localDb.transactionItems.where('transactionId').equals(id).toArray()).sort((a, b) => (a.id || 0) - (b.id || 0));
+      const jobNumber = tx.jobNumber || (await generateJobNumber());
+
+      // Release this job's own reservation, then validate against physical stock.
+      await adjustReservations(items, -1);
+      const stockCheck = await validateStockForReduction(items);
+      if (!stockCheck.ok) {
+        // Re-reserve so the pending job is not left without its reservation.
+        await adjustReservations(items, 1);
+        throw new Error(stockCheck.message);
+      }
+      await reduceStock(items);
+
+      const total = round2(tx.totalAmount ?? tx.total ?? 0);
+      const prevPaid = round2(tx.amountPaid || 0);
+      const remaining = Math.max(0, round2(total - prevPaid));
+      const method = opts.paymentMethod || tx.paymentMethod || 'cash';
+      const now = nowISO();
+
+      if (remaining > 0) {
+        await addDrawerSaleEntry(method, remaining, `Sale ${jobNumber} (${tx.customerName || 'Walk-in'})`);
+      }
+
+      const paid = round2(prevPaid + remaining);
+      await localDb.transactions.update(id, {
+        status: 'completed',
+        paymentMethod: method,
+        amountPaid: paid,
+        totalAmount: total,
+        total: total,
+        remainingBalance: 0,
+        paymentStatus: 'paid',
+        jobNumber,
+        completedAt: now,
+        updatedAt: now,
+      } as any);
+
+      const techName = tx.technicianName as string;
+      const cashReceived = opts.cashReceived && opts.paymentMethod === 'cash' ? opts.cashReceived : undefined;
+      return {
+        id,
+        jobNumber,
+        customerName: (tx.customerName as string) || (tx.customer as string) || 'Walk-in',
+        customerPhone: (tx.customerPhone as string) || tx.unit,
+        phoneBrand: tx.phoneBrand as string,
+        phoneModel: tx.phoneModel as string,
+        technicianName: techName || 'None',
+        items,
+        total,
+        amountPaid: paid,
+        remainingBalance: 0,
+        paymentMethod: method,
+        cashReceived,
+        change: method === 'cash' && cashReceived ? Math.max(0, round2(cashReceived - remaining)) : undefined,
+        createdAt: now,
+        status: 'completed',
+      };
+    });
+  },
+
+  /** Complete a brand new sale from the POS without a pending step. */
+  async completeNewJob(input: JobInput, opts?: { cashReceived?: number }): Promise<JobCompletionResult> {
+    return localDb.transaction('rw', JOB_TABLES, async () => {
+      const jobNumber = await generateJobNumber();
+      const now = nowISO();
+      const record = txRecordFromJobInput(input);
+      const total = record.totalAmount ?? 0;
+
+      const stockCheck = await validateStockForReduction(input.items);
+      if (!stockCheck.ok) throw new Error(stockCheck.message);
+
+      const id = await localDb.transactions.add({
+        ...record,
+        status: 'completed',
+        jobNumber,
+        total,
+        totalAmount: total,
+        amountPaid: total,
+        remainingBalance: 0,
+        paymentStatus: 'paid',
+        paymentMethod: input.paymentMethod || 'cash',
+        completedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      } as any);
+
+      await createJobItems(id, input.items);
+      await reduceStock(input.items);
+
+      const method = input.paymentMethod || 'cash';
+      await addDrawerSaleEntry(method, total, `Sale ${jobNumber} (${record.customerName})`);
+
+      const cashReceived = opts?.cashReceived && method === 'cash' ? opts.cashReceived : undefined;
+      const items = (await localDb.transactionItems.where('transactionId').equals(id).toArray()).sort((a, b) => (a.id || 0) - (b.id || 0));
+      return {
+        id,
+        jobNumber,
+        customerName: record.customerName || 'Walk-in',
+        customerPhone: record.customerPhone,
+        phoneBrand: record.phoneBrand,
+        phoneModel: record.phoneModel,
+        technicianName: input.technicianName || 'None',
+        items,
+        total,
+        amountPaid: total,
+        remainingBalance: 0,
+        paymentMethod: method,
+        cashReceived,
+        change: method === 'cash' && cashReceived ? Math.max(0, round2(cashReceived - total)) : undefined,
+        createdAt: now,
+        status: 'completed',
+      };
+    });
+  },
+
+  /** Record a deposit against an open job. Does NOT mark paid unless paid >= total. */
+  async recordDeposit(id: number, opts: { amount: number; method: 'cash' | 'gcash'; note?: string }): Promise<{ paymentStatus: JobPaymentStatus; remainingBalance: number; amountPaid: number }> {
+    return localDb.transaction('rw', JOB_TABLES, async () => {
+      const tx = await localDb.transactions.get(id);
+      if (!tx) throw new Error('Job not found');
+      if (!isOpenStatus(tx.status)) throw new Error('Only open jobs can receive deposits');
+      const amount = round2(Number(opts.amount) || 0);
+      if (amount <= 0) throw new Error('Enter a valid deposit amount');
+
+      const total = round2(tx.totalAmount ?? tx.total ?? 0);
+      const amountPaid = round2((tx.amountPaid || 0) + amount);
+      const remainingBalance = Math.max(0, round2(total - amountPaid));
+      const paymentStatus = paymentStatusFor(total, amountPaid);
+
+      const jobNumber = tx.jobNumber || '?';
+      await addDrawerDepositEntry(opts.method, amount, `Deposit — ${jobNumber} (${tx.customerName || 'Walk-in'})${opts.note ? ` — ${opts.note}` : ''}`);
+
+      await localDb.transactions.update(id, {
+        amountPaid,
+        remainingBalance,
+        paymentStatus,
+        paymentMethod: amountPaid > 0 ? opts.method : tx.paymentMethod,
+        updatedAt: nowISO(),
+      } as any);
+
+      return { paymentStatus, remainingBalance, amountPaid };
+    });
+  },
+
+  /** Advance a job's status. Cancelling an open job releases its stock reservations. */
+  async updateJobStatus(id: number, status: TransactionStatus): Promise<void> {
+    await localDb.transaction('rw', JOB_TABLES, async () => {
+      const tx = await localDb.transactions.get(id);
+      if (!tx) return;
+      if (isCompletedStatus(status)) {
+        // Completed transitions should go through completeJob (payment collection).
+        throw new Error('Use Complete Job to finalize this job with payment');
+      }
+      if (status === 'cancelled' && isOpenStatus(tx.status)) {
+        const items = await localDb.transactionItems.where('transactionId').equals(id).toArray();
+        await adjustReservations(items, -1);
+      }
+      await localDb.transactions.update(id, { status, updatedAt: nowISO() } as any);
+    });
+  },
+
+  /** Cancel an open job and release its reservations. */
+  async cancelJob(id: number): Promise<void> {
+    await this.updateJobStatus(id, 'cancelled');
+  },
+
+  /** Load a job as editable POS input (for re-opening). */
+  async getJobInput(id: number): Promise<{ transaction: Transaction; items: JobItemInput[] }> {
+    const transaction = await localDb.transactions.get(id);
+    if (!transaction) throw new Error('Job not found');
+    const rawItems = await localDb.transactionItems.where('transactionId').equals(id).toArray();
+    return { transaction, items: await toJobItemInputs(rawItems) };
+  },
+};
+
+// ─── Re-export helpers for legacy compatibility ─────────────────────────────
+export const isCompleted = isCompletedStatus;
+
+// ─── Transaction Item Services ──────────────────────────────────────────────
 export const transactionItemService = {
   async list(): Promise<TransactionItem[]> {
     return localDb.transactionItems.toArray();
@@ -431,19 +1049,15 @@ export const transactionItemService = {
   },
 
   async create(item: Omit<TransactionItem, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
-    return localDb.transactionItems.add({
-      ...item,
-      createdAt: now,
-    } as any);
+    return localDb.transactionItems.add({ ...item, createdAt: nowISO() } as any);
   },
 
   async delete(id: number): Promise<void> {
-    return localDb.transactionItems.delete(id);
+    await localDb.transactionItems.delete(id);
   },
 };
 
-// Defective Item Services
+// ─── Defective Item Services ────────────────────────────────────────────────
 export const defectiveItemService = {
   async list(): Promise<DefectiveItem[]> {
     const items = await localDb.defectiveItems.toArray();
@@ -462,8 +1076,8 @@ export const defectiveItemService = {
     }) as DefectiveItem[];
   },
 
-  async create(item: Omit<DefectiveItem, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
+  async create(item: NewDefectiveItem): Promise<number> {
+    const now = nowISO();
     const product = await productService.get(item.productId);
     const costPerUnit = (item.costPerUnit as number) || product?.cost || 0;
     const totalLoss = (item.totalLoss as number) || (costPerUnit * (item.quantity || 1));
@@ -479,15 +1093,15 @@ export const defectiveItemService = {
         stock: Math.max(0, (product.stock || 0) - (item.quantity || 1)),
       });
     }
-    return id as number;
+    return id;
   },
 
   async delete(id: number): Promise<void> {
-    return localDb.defectiveItems.delete(id);
+    await localDb.defectiveItems.delete(id);
   },
 };
 
-// Backjob Services
+// ─── Backjob Services ───────────────────────────────────────────────────────
 export const backjobService = {
   async list(): Promise<Backjob[]> {
     const list = await localDb.backjobs.toArray();
@@ -507,38 +1121,30 @@ export const backjobService = {
       const tech = await localDb.technicians.get(b.technicianId);
       if (tech) (b as any).technicianName = tech.name;
     }
-    return b as Backjob;
+    return b;
   },
 
   async create(backjob: Omit<Backjob, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
-    return localDb.backjobs.add({
-      ...backjob,
-      createdAt: now,
-      updatedAt: now,
-    } as any);
+    const now = nowISO();
+    return localDb.backjobs.add({ ...backjob, createdAt: now, updatedAt: now } as any);
   },
 
   async update(id: number, backjob: Partial<Backjob>): Promise<void> {
-    const now = new Date().toISOString();
-    return localDb.backjobs.update(id, {
-      ...backjob,
-      updatedAt: now,
-    });
+    await localDb.backjobs.update(id, { ...backjob, updatedAt: nowISO() } as any);
   },
 
   async delete(id: number): Promise<void> {
-    return localDb.backjobs.delete(id);
+    await localDb.backjobs.delete(id);
   },
 
   async getByStatus(status: string): Promise<Backjob[]> {
-    return localDb.backjobs.where('status').equals(status).toArray() as Promise<Backjob[]>;
+    return (await this.list()).filter(b => b.status === status);
   },
 };
 
-// Cash Drawer Services
+// ─── Cash Drawer Services ───────────────────────────────────────────────────
 function computeEntryBalance(
-  entries: Array<{ type: string; amount: number; createdAt?: string }>,
+  entries: Array<{ type: string; amount: number; createdAt?: string; [key: string]: unknown }>,
 ) {
   const signForType = (type: string, delta: number): number => {
     switch (type) {
@@ -574,20 +1180,18 @@ function computeEntryBalance(
   });
 }
 
+type DrawerEntryWithBalance<T> = T & { runningBalance: number };
+
 export const cashDrawerService = {
   async get(): Promise<{ balance: number; entries: (CashDrawerEntry & { runningBalance: number })[] }> {
     const entries = await localDb.cashDrawerEntries.toArray();
-    const withBalance = computeEntryBalance(entries as any) as (CashDrawerEntry & { runningBalance: number })[];
+    const withBalance = getCashDrawerEntriesWithBalance(entries);
     const balance = withBalance.length > 0 ? withBalance[withBalance.length - 1].runningBalance : 0;
-    return { balance, entries: withBalance as any };
+    return { balance, entries: withBalance };
   },
 
   async addEntry(entry: Omit<CashDrawerEntry, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
-    return localDb.cashDrawerEntries.add({
-      ...entry,
-      createdAt: now,
-    } as any);
+    return localDb.cashDrawerEntries.add({ ...entry, createdAt: nowISO() } as any);
   },
 };
 
@@ -595,21 +1199,31 @@ export const cashDrawerService = {
 export const gcashDrawerService = {
   async get(): Promise<{ balance: number; entries: (GcashDrawerEntry & { runningBalance: number })[] }> {
     const entries = await localDb.gcashDrawerEntries.toArray();
-    const withBalance = computeEntryBalance(entries as any) as (GcashDrawerEntry & { runningBalance: number })[];
+    const withBalance = getGcashDrawerEntriesWithBalance(entries);
     const balance = withBalance.length > 0 ? withBalance[withBalance.length - 1].runningBalance : 0;
-    return { balance, entries: withBalance as any };
+    return { balance, entries: withBalance };
   },
 
   async addEntry(entry: Omit<GcashDrawerEntry, 'id'>): Promise<number> {
-    const now = new Date().toISOString();
-    return localDb.gcashDrawerEntries.add({
-      ...entry,
-      createdAt: now,
-    } as any);
+    return localDb.gcashDrawerEntries.add({ ...entry, createdAt: nowISO() } as any);
   },
 };
 
-// Settings Services
+function getCashDrawerEntriesWithBalance(
+  entries: CashDrawerEntry[],
+): DrawerEntryWithBalance<CashDrawerEntry>[] {
+  return computeEntryBalance(entries) as DrawerEntryWithBalance<CashDrawerEntry>[];
+}
+
+function getGcashDrawerEntriesWithBalance(
+  entries: GcashDrawerEntry[],
+): DrawerEntryWithBalance<GcashDrawerEntry>[] {
+  return computeEntryBalance(entries) as DrawerEntryWithBalance<GcashDrawerEntry>[];
+}
+
+// ─── Settings Services ──────────────────────────────────────────────────────
+export const PRE_ORDER_MARKUP_DEFAULT = 20;
+
 export const settingsService = {
   async get(): Promise<Record<string, any>> {
     const all = await localDb.settings.toArray();
@@ -617,31 +1231,25 @@ export const settingsService = {
     all.forEach(s => {
       result[s.key || ''] = s.value;
     });
+    if (typeof result.preOrderMarkup !== 'number' || !Number.isFinite(result.preOrderMarkup)) {
+      result.preOrderMarkup = PRE_ORDER_MARKUP_DEFAULT;
+    }
     return result;
   },
 
   async set(key: string, value: any): Promise<void> {
-    const existing = await localDb.settings
-      .where('key').equals(key).first();
+    const existing = await localDb.settings.where('key').equals(key).first();
 
-    const now = new Date().toISOString();
+    const now = nowISO();
     if (existing) {
-      await localDb.settings.update(existing.id as number, {
-        value,
-        updatedAt: now,
-      });
+      await localDb.settings.update(existing.id, { value, updatedAt: now } as any);
     } else {
-      await localDb.settings.add({
-        key,
-        value,
-        createdAt: now,
-        updatedAt: now,
-      } as any);
+      await localDb.settings.add({ key, value, createdAt: now, updatedAt: now } as any);
     }
   },
 };
 
-// Dashboard Service
+// ─── Dashboard Service ──────────────────────────────────────────────────────
 export const dashboardService = {
   async getDashboard(period: 'today' | 'week' | 'month' | 'year'): Promise<Dashboard> {
     const now = new Date();
@@ -667,42 +1275,38 @@ export const dashboardService = {
         break;
     }
 
-    // Get transactions for period
     const txs = await transactionService.getByDateRange(startDate, now);
-    const completed = txs.filter(tx => tx.status === 'completed' || (tx.status as string) === 'complete');
-    const pending = txs.filter(tx => tx.status === 'pending');
+    const completed = txs.filter(tx => isCompletedStatus(tx.status));
+    const open = txs.filter(tx => isOpenStatus(tx.status));
 
-    // Calculate totals
-    const periodSales = completed.reduce((sum, tx) => sum + (tx.total || 0), 0);
-    const periodProfit = periodSales * 0.2; // Simplified: assume 20% profit margin
+    const periodSales = round2(completed.reduce((sum, tx) => sum + (tx.total || 0), 0));
+    const periodProfit = round2(completed.reduce((sum, tx) => sum + tx.profit, 0));
     const periodTransactions = completed.length;
 
-    // Get drawer balances
     const { balance: cashCount } = await cashDrawerService.get();
     const { balance: gcashCount } = await gcashDrawerService.get();
 
-    // Get low stock products
     const allProducts = await productService.list();
-    const lowStockProducts = allProducts.filter(p => (p.stock ?? 0) <= (p.reorderPoint ?? 10));
+    const lowStockProducts = allProducts.filter(p => availableStockOf(p) <= (p.reorderPoint ?? 10));
     const lowStockCount = lowStockProducts.length;
 
-    // Get pending backjobs
-    const backjobs = await backjobService.getByStatus('pending');
-    const pendingCount = backjobs.length;
+    const openJobs = open.length;
 
-    // Get transaction items for top products/services
-    const allItems = await transactionItemService.list();
-    const txItems = completed
-      .flatMap(tx => tx.id ? allItems.filter(item => item.transactionId === tx.id) : [])
-      .filter(item => item);
+    // Open-job financials (deposits recorded + outstanding balances).
+    const depositTotal = round2(open.reduce((sum, tx) => sum + (tx.amountPaid || 0), 0));
+    const outstandingTotal = round2(open.reduce((sum, tx) => sum + Math.max(0, (tx.total || 0) - (tx.amountPaid || 0)), 0));
+
+    const preOrderJobs = txs.filter(tx => tx.hasPreOrder);
+    const preOrderSales = round2(preOrderJobs.filter(tx => isCompletedStatus(tx.status)).reduce((sum, tx) => sum + (tx.total || 0), 0));
+    const preOrderCount = preOrderJobs.length;
+
+    const txItems = completed.flatMap(tx => tx.items);
 
     const topServices = getTopServices(txItems);
     const topProducts = getTopProducts(txItems);
 
-    // Get recent transactions
-    const recentTransactions = completed.slice(-10).reverse();
+    const recentTransactions = [...completed].slice(-10).reverse();
 
-    // Sales trend
     const salesTrend = getSalesTrend(txs, period, startDate);
 
     return {
@@ -713,7 +1317,12 @@ export const dashboardService = {
       cashCount,
       gcashCount,
       lowStockCount,
-      pendingCount,
+      pendingCount: openJobs,
+      openJobs,
+      depositTotal,
+      outstandingTotal,
+      preOrderSales,
+      preOrderCount,
       salesTrend,
       topServices,
       topProducts,
@@ -722,7 +1331,7 @@ export const dashboardService = {
     };
   },
 
-  async getMonthlyReport(month?: string): Promise<any> {
+  async getMonthlyReport(month?: string): Promise<MonthlyReport> {
     const selectedMonth = month || new Date().toISOString().slice(0, 7);
     const [yearStr, monthStr] = selectedMonth.split('-');
     const year = parseInt(yearStr);
@@ -735,13 +1344,13 @@ export const dashboardService = {
     const monthLabel = startDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
 
     const allTxs = await transactionService.getByDateRange(startDate, endDate);
-    const completed = allTxs.filter(tx => tx.status === 'completed' || (tx.status as string) === 'complete');
+    const completed = allTxs.filter(tx => isCompletedStatus(tx.status));
 
-    const totalSales = completed.reduce((sum, tx) => sum + (tx.total || 0), 0);
-    const totalProfit = totalSales * 0.2;
+    const totalSales = round2(completed.reduce((sum, tx) => sum + (tx.total || 0), 0));
+    const totalProfit = round2(completed.reduce((sum, tx) => sum + tx.profit, 0));
     const totalTransactions = completed.length;
-    const cashTotal = completed.filter(tx => tx.paymentMethod === 'cash').reduce((sum, tx) => sum + (tx.total || 0), 0);
-    const gcashTotal = completed.filter(tx => tx.paymentMethod === 'gcash').reduce((sum, tx) => sum + (tx.total || 0), 0);
+    const cashTotal = round2(completed.filter(tx => tx.paymentMethod === 'cash').reduce((sum, tx) => sum + (tx.total || 0), 0));
+    const gcashTotal = round2(completed.filter(tx => tx.paymentMethod === 'gcash').reduce((sum, tx) => sum + (tx.total || 0), 0));
     const avgPerDay = daysInMonth > 0 ? totalSales / daysInMonth : 0;
 
     const daysMap = new Map<number, { transactions: number; sales: number; cashSales: number; gcashSales: number; profit: number }>();
@@ -756,41 +1365,27 @@ export const dashboardService = {
       existing.sales += tx.total || 0;
       if (tx.paymentMethod === 'cash') existing.cashSales += tx.total || 0;
       if (tx.paymentMethod === 'gcash') existing.gcashSales += tx.total || 0;
-      existing.profit += (tx.total || 0) * 0.2;
+      existing.profit += tx.profit;
       daysMap.set(d, existing);
     });
 
-    const days = Array.from(daysMap.entries()).map(([dayNum, stats]) => {
+    const days: MonthlyDay[] = Array.from(daysMap.entries()).map(([dayNum, stats]) => {
       const dayDate = new Date(year, mIndex, dayNum);
-      return {
-        date: dayDate.toISOString().slice(0, 10),
-        ...stats,
-      };
+      return { date: dayDate.toISOString().slice(0, 10), ...stats };
     });
 
     const techs = await localDb.technicians.toArray();
-    const techBreakdown = techs.map(t => {
+    const techBreakdown: TechnicianReportRow[] = techs.map(t => {
       const techTxs = completed.filter(tx => tx.technicianId === t.id);
       const jobs = techTxs.length;
-      const sales = techTxs.reduce((sum, tx) => sum + (tx.total || 0), 0);
-      const profit = sales * 0.2;
+      const sales = round2(techTxs.reduce((sum, tx) => sum + (tx.total || 0), 0));
+      const profit = round2(techTxs.reduce((sum, tx) => sum + tx.profit, 0));
       const cashJobs = techTxs.filter(tx => tx.paymentMethod === 'cash').length;
       const gcashJobs = techTxs.filter(tx => tx.paymentMethod === 'gcash').length;
-      return {
-        technicianId: t.id as number,
-        name: t.name as string,
-        jobs,
-        sales,
-        profit,
-        cashJobs,
-        gcashJobs,
-      };
+      return { technicianId: t.id, name: t.name, jobs, sales, profit, cashJobs, gcashJobs };
     }).sort((a, b) => b.jobs - a.jobs);
 
-    const allItems = await transactionItemService.list();
-    const txItems = completed
-      .flatMap(tx => tx.id ? allItems.filter(item => item.transactionId === tx.id) : [])
-      .filter(item => item);
+    const txItems = completed.flatMap(tx => tx.items);
 
     const topServices = getTopServices(txItems);
     const topProducts = getTopProducts(txItems);
@@ -810,7 +1405,7 @@ export const dashboardService = {
     };
   },
 
-  async getTechnicianReport(period: string = 'month'): Promise<any[]> {
+  async getTechnicianReport(period: string = 'month'): Promise<TechnicianReportRow[]> {
     const now = new Date();
     let startDate: Date;
     switch (period) {
@@ -830,20 +1425,20 @@ export const dashboardService = {
     }
 
     const txs = await transactionService.getByDateRange(startDate, now);
-    const completed = txs.filter(tx => tx.status === 'completed' || (tx.status as string) === 'complete');
+    const completed = txs.filter(tx => isCompletedStatus(tx.status));
     const techs = await localDb.technicians.toArray();
 
     return techs.map(t => {
       const techTxs = completed.filter(tx => tx.technicianId === t.id);
       const jobs = techTxs.length;
-      const sales = techTxs.reduce((sum, tx) => sum + (tx.total || 0), 0);
-      const profit = sales * 0.2;
+      const sales = round2(techTxs.reduce((sum, tx) => sum + (tx.total || 0), 0));
+      const profit = round2(techTxs.reduce((sum, tx) => sum + tx.profit, 0));
       const cashJobs = techTxs.filter(tx => tx.paymentMethod === 'cash').length;
       const gcashJobs = techTxs.filter(tx => tx.paymentMethod === 'gcash').length;
       return {
-        technicianId: t.id as number,
-        name: t.name as string,
-        role: (t.role as string) || (t.specialization as string) || 'Senior Technician',
+        technicianId: t.id,
+        name: t.name,
+        role: t.role || t.specialization || 'Senior Technician',
         jobs,
         sales,
         profit,
@@ -854,7 +1449,7 @@ export const dashboardService = {
   },
 };
 
-// Dashboard Helper Functions
+// ─── Dashboard Helper Functions ─────────────────────────────────────────────
 function getTopServices(items: TransactionItem[]): Array<{ name: string; count: number; revenue: number }> {
   const grouped = new Map<string, { count: number; revenue: number }>();
   items
@@ -890,13 +1485,13 @@ function getTopProducts(items: TransactionItem[]): Array<{ name: string; count: 
 }
 
 function getSalesTrend(
-  txs: Transaction[],
+  txs: EnrichedTransaction[],
   period: 'today' | 'week' | 'month' | 'year',
-  startDate: Date,
+  _startDate: Date,
 ): Array<{ date: string; sales: number; profit: number }> {
   const grouped = new Map<string, { sales: number; profit: number }>();
 
-  const completed = txs.filter(tx => tx.status === 'completed');
+  const completed = txs.filter(tx => isCompletedStatus(tx.status));
   completed.forEach(tx => {
     const txDate = new Date(tx.createdAt || new Date());
     let dateKey: string;
@@ -913,7 +1508,7 @@ function getSalesTrend(
 
     const current = grouped.get(dateKey) || { sales: 0, profit: 0 };
     current.sales += tx.total || 0;
-    current.profit += (tx.total || 0) * 0.2; // Simplified: 20% profit
+    current.profit += tx.profit;
     grouped.set(dateKey, current);
   });
 

@@ -95,17 +95,20 @@ export default function UsersPage() {
 
   const handleSave = async () => {
     if (!editingUser && (!form.username || !form.password)) {
-      return toast({ title: "Username and password are required", variant: "destructive" });
+      toast({ title: "Username and password are required", variant: "destructive" });
+      return;
     }
     if (!editingUser && form.password.length < 6) {
-      return toast({ title: "Password must be at least 6 characters", variant: "destructive" });
+      toast({ title: "Password must be at least 6 characters", variant: "destructive" });
+      return;
     }
 
     try {
       if (!editingUser) {
         const existing = await localDb.users.where("username").equalsIgnoreCase(form.username).first();
         if (existing) {
-          return toast({ title: "Username already exists", variant: "destructive" });
+          toast({ title: "Username already exists", variant: "destructive" });
+          return;
         }
         const passwordHash = await bcrypt.hash(form.password, 10);
         await localDb.users.add({
@@ -138,7 +141,7 @@ export default function UsersPage() {
   };
 
   const handleDelete = async (u: AppUser) => {
-    if (u.id === me?.id) return toast({ title: "Cannot delete your own account", variant: "destructive" });
+    if (u.id === me?.id) { toast({ title: "Cannot delete your own account", variant: "destructive" }); return; }
     if (!confirm(`Delete user "${u.username}"? This cannot be undone.`)) return;
     try {
       await localDb.users.delete(u.id);
@@ -151,7 +154,7 @@ export default function UsersPage() {
   };
 
   const toggleActive = async (u: AppUser) => {
-    if (u.id === me?.id) return toast({ title: "Cannot deactivate your own account", variant: "destructive" });
+    if (u.id === me?.id) { toast({ title: "Cannot deactivate your own account", variant: "destructive" }); return; }
     try {
       await localDb.users.update(u.id, { isActive: !u.isActive });
       toast({ title: u.isActive ? "User deactivated" : "User activated" });

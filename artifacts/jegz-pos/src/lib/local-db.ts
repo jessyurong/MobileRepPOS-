@@ -1,20 +1,34 @@
 import Dexie, { type EntityTable } from 'dexie';
+import type {
+  AppUser,
+  Backjob,
+  CashDrawerEntry,
+  DefectiveItem,
+  GcashDrawerEntry,
+  MetaRecord,
+  Product,
+  Service,
+  Settings,
+  Technician,
+  Transaction,
+  TransactionItem,
+} from './db-types';
 
 export type LocalRecord = { id?: number; createdAt?: string; updatedAt?: string; [key: string]: unknown };
 
 class JegzLocalDB extends Dexie {
-  products!: EntityTable<LocalRecord, 'id'>;
-  services!: EntityTable<LocalRecord, 'id'>;
-  technicians!: EntityTable<LocalRecord, 'id'>;
-  transactions!: EntityTable<LocalRecord, 'id'>;
-  transactionItems!: EntityTable<LocalRecord, 'id'>;
-  cashDrawerEntries!: EntityTable<LocalRecord, 'id'>;
-  gcashDrawerEntries!: EntityTable<LocalRecord, 'id'>;
-  defectiveItems!: EntityTable<LocalRecord, 'id'>;
-  backjobs!: EntityTable<LocalRecord, 'id'>;
-  users!: EntityTable<LocalRecord, 'id'>;
-  settings!: EntityTable<LocalRecord, 'id'>;
-  meta!: EntityTable<LocalRecord & { key: string; value: unknown }, 'key'>;
+  products!: EntityTable<Product, 'id'>;
+  services!: EntityTable<Service, 'id'>;
+  technicians!: EntityTable<Technician, 'id'>;
+  transactions!: EntityTable<Transaction, 'id'>;
+  transactionItems!: EntityTable<TransactionItem, 'id'>;
+  cashDrawerEntries!: EntityTable<CashDrawerEntry, 'id'>;
+  gcashDrawerEntries!: EntityTable<GcashDrawerEntry, 'id'>;
+  defectiveItems!: EntityTable<DefectiveItem, 'id'>;
+  backjobs!: EntityTable<Backjob, 'id'>;
+  users!: EntityTable<AppUser, 'id'>;
+  settings!: EntityTable<Settings, 'id'>;
+  meta!: EntityTable<MetaRecord, 'key'>;
 
   constructor() {
     super('JEGZ_POS_OFFLINE_DB');
@@ -30,6 +44,35 @@ class JegzLocalDB extends Dexie {
       backjobs: '++id,customer,technicianId,status,createdAt',
       users: '++id,username,role,isActive,createdAt',
       settings: '++id',
+      meta: 'key'
+    });
+    this.version(2).stores({
+      products: '++id,name,category,deviceType,stock,createdAt',
+      services: '++id,name,type',
+      technicians: '++id,name',
+      transactions: '++id,customer,unit,technicianId,paymentMethod,status,createdAt',
+      transactionItems: '++id,transactionId,type,refId',
+      cashDrawerEntries: '++id,type,createdAt',
+      gcashDrawerEntries: '++id,type,createdAt',
+      defectiveItems: '++id,productId,createdAt',
+      backjobs: '++id,customer,technicianId,status,createdAt',
+      users: '++id,username,role,isActive,createdAt',
+      settings: '++id,key',
+      meta: 'key'
+    });
+    this.version(3).stores({
+      products: '++id,name,category,deviceType,stock,createdAt',
+      services: '++id,name,type',
+      technicians: '++id,name',
+      transactions:
+        '++id,customerName,customerPhone,phoneBrand,phoneModel,jobNumber,technicianId,paymentMethod,status,createdAt,customer,unit',
+      transactionItems: '++id,transactionId,type,refId,isPreOrder',
+      cashDrawerEntries: '++id,type,createdAt',
+      gcashDrawerEntries: '++id,type,createdAt',
+      defectiveItems: '++id,productId,createdAt',
+      backjobs: '++id,customer,technicianId,status,createdAt',
+      users: '++id,username,role,isActive,createdAt',
+      settings: '++id,key',
       meta: 'key'
     });
   }

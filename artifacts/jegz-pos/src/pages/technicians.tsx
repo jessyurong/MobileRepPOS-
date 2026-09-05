@@ -31,7 +31,7 @@ export default function TechniciansPage() {
   });
 
   const handleSave = () => {
-    if (!formData.name) return toast({ title: "Name is required", variant: "destructive" });
+    if (!formData.name) { toast({ title: "Name is required", variant: "destructive" }); return; }
     
     createTechnician.mutate({ data: formData }, { 
       onSuccess: () => {
@@ -93,7 +93,7 @@ export default function TechniciansPage() {
                     <TableCell className="font-medium text-base">{tech.name}</TableCell>
                     <TableCell className="text-muted-foreground">{tech.role}</TableCell>
                     <TableCell className="text-center font-bold">{tech.jobsDone}</TableCell>
-                    <TableCell className="text-right font-semibold text-primary">{formatCurrency(tech.totalSales)}</TableCell>
+                    <TableCell className="text-right font-semibold text-primary">{formatCurrency(tech.totalSales ?? 0)}</TableCell>
                     <TableCell className="text-right">
                       <Button variant="ghost" size="icon" className="text-destructive hover:bg-destructive/20" onClick={() => handleDelete(tech.id)}>
                         <Trash2 className="h-4 w-4" />

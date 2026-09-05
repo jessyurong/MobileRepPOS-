@@ -1,15 +1,18 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import {
   useListTransactions,
   useGetTransactionStats,
   useDeleteTransaction,
   useUpdateTransactionStatus,
-  getListTransactionsQueryKey,
-  getGetTransactionStatsQueryKey,
-  getGetDashboardQueryKey,
-  getGetCashDrawerQueryKey,
-  getGetGcashDrawerQueryKey,
+  useCompleteTransaction,
+  useRecordDeposit,
+  useCancelTransaction,
+  type EnrichedTransaction,
+  type TransactionStatus,
+  type JobPaymentStatus,
 } from "@/lib/offline-api";
+import { useQueryClient } from "@tanstack/react-query";
 import { formatCurrency, formatDate } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -17,131 +20,221 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Search, Trash2, CreditCard, Clock, Smartphone, Wrench, CheckCircle2, Clock3, Bell, Printer } from "lucide-react";
-import { useQueryClient } from "@tanstack/react-query";
+import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import {
+  Search,
+  Trash2,
+  CreditCard,
+  Banknote,
+  Clock,
+  Smartphone,
+  Wrench,
+  CheckCircle2,
+  Clock3,
+  Bell,
+  Eye,
+  PencilLine,
+  HandCoins,
+  XCircle,
+  User2,
+} from "lucide-react";
 
 type Period = "today" | "week" | "month" | "all";
-type StatusFilter = "all" | "pending" | "ready" | "complete";
+type StatusFilter = "all" | "open" | "pending" | "in_progress" | "waiting_for_parts" | "pre_ordered" | "ready_for_pickup" | "completed" | "cancelled";
+
+const STATUS_META: Record<string, { label: string; cls: string }> = {
+  pending: { label: "Pending", cls: "bg-amber-500 text-white" },
+  in_progress: { label: "In Progress", cls: "bg-blue-500 text-white" },
+  waiting_for_parts: { label: "Waiting for Parts", cls: "bg-violet-500 text-white" },
+  pre_ordered: { label: "Pre-ordered", cls: "bg-cyan-600 text-white" },
+  ready_for_pickup: { label: "Ready", cls: "bg-emerald-600 text-white" },
+  completed: { label: "Completed", cls: "bg-green-600 text-white" },
+  cancelled: { label: "Cancelled", cls: "bg-slate-500 text-white" },
+};
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "pending") return <Badge className="bg-amber-500 text-white gap-1"><Clock3 className="h-3 w-3" />Pending</Badge>;
-  if (status === "ready") return <Badge className="bg-blue-500 text-white gap-1"><Bell className="h-3 w-3" />Ready</Badge>;
-  if (status === "complete") return <Badge className="bg-green-600 text-white gap-1"><CheckCircle2 className="h-3 w-3" />Complete</Badge>;
-  return <Badge variant="outline">{status}</Badge>;
+  const meta = STATUS_META[status] || STATUS_META.pending;
+  return <Badge className={meta.cls}>{meta.label}</Badge>;
 }
 
-type TxFromList = {
-  id: number;
-  customer: string;
-  unit: string;
-  technicianName: string;
-  paymentMethod?: string | null;
-  total: number;
-  profit: number;
-  status: string;
-  hasPreOrder: boolean;
-  createdAt: string;
-  items: { type: string; refId?: number | null; name: string; qty: number; price: number; isPreOrder: boolean }[];
-};
+function PaymentBadge({ status, method }: { status?: JobPaymentStatus; method?: string }) {
+  if (status === "paid") return <Badge className="bg-green-600 text-white">{method?.toUpperCase() || "PAID"}</Badge>;
+  if (status === "partial") return <Badge className="bg-blue-600 text-white">PARTIAL</Badge>;
+  return <Badge variant="outline">UNPAID</Badge>;
+}
+
+const OPEN_JOB_KEY = "jegz_open_job";
+const isOpenTxn = (tx: EnrichedTransaction) => !["completed", "cancelled"].includes(tx.status);
+const isCompletedTxn = (tx: EnrichedTransaction) => tx.status === "completed";
+const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export default function TransactionsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [, setLocation] = useLocation();
 
   const [period, setPeriod] = useState<Period>("today");
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
 
-  const { data: transactions = [], isLoading: isLoadingTx } = useListTransactions({
+  const { data: transactions = [], isLoading: isLoadingTx, refetch: refetchTx } = useListTransactions({
     period,
     search,
-    status: statusFilter === "all" ? undefined : statusFilter,
+    status: statusFilter === "all" || statusFilter === "open" ? undefined : statusFilter,
   });
-  const { data: stats } = useGetTransactionStats({ period });
+  const { data: stats, refetch: refetchStats } = useGetTransactionStats({ period });
 
   const deleteTransaction = useDeleteTransaction();
   const updateStatus = useUpdateTransactionStatus();
+  const completeJob = useCompleteTransaction();
+  const recordDeposit = useRecordDeposit();
+  const cancelJob = useCancelTransaction();
+
+  const filtered = statusFilter === "open" ? transactions.filter(isOpenTxn) : transactions;
 
   // Complete dialog state
-  const [completeDialogTx, setCompleteDialogTx] = useState<TxFromList | null>(null);
+  const [completeTx, setCompleteTx] = useState<EnrichedTransaction | null>(null);
   const [completePayMethod, setCompletePayMethod] = useState<"cash" | "gcash">("cash");
   const [completeCashReceived, setCompleteCashReceived] = useState<number>(0);
 
-  // Receipt state
-  const [receiptData, setReceiptData] = useState<any>(null);
-  const [receiptOpen, setReceiptOpen] = useState(false);
+  // Deposit dialog state
+  const [depositTx, setDepositTx] = useState<EnrichedTransaction | null>(null);
+  const [depositAmount, setDepositAmount] = useState("");
+  const [depositNote, setDepositNote] = useState("");
+  const [depositMethod, setDepositMethod] = useState<"cash" | "gcash">("cash");
 
-  const invalidateAll = () => {
-    queryClient.invalidateQueries({ queryKey: getListTransactionsQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetTransactionStatsQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetDashboardQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetCashDrawerQueryKey() });
-    queryClient.invalidateQueries({ queryKey: getGetGcashDrawerQueryKey() });
+  // Details dialog
+  const [detailsTx, setDetailsTx] = useState<EnrichedTransaction | null>(null);
+
+  const refresh = () => {
+    refetchTx();
+    refetchStats();
+  };
+  const refreshAll = () => {
+    queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    queryClient.invalidateQueries({ queryKey: ["transactionStats"] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+    queryClient.invalidateQueries({ queryKey: ["cashDrawer"] });
+    queryClient.invalidateQueries({ queryKey: ["gcashDrawer"] });
+    refresh();
   };
 
-  const handleDelete = (id: number) => {
-    if (confirm("Delete this transaction? THIS CANNOT BE UNDONE.")) {
-      deleteTransaction.mutate({ id }, {
-        onSuccess: () => { toast({ title: "Transaction deleted" }); invalidateAll(); },
-      });
+  const handleDelete = (tx: EnrichedTransaction) => {
+    const label = isOpenTxn(tx)
+      ? "Delete this pending job? Stock reservations will be released."
+      : isCompletedTxn(tx)
+        ? "Delete this completed job? Stock will be restored to inventory."
+        : "Delete this transaction? THIS CANNOT BE UNDONE.";
+    if (confirm(label)) {
+      deleteTransaction.mutate(
+        { id: tx.id },
+        {
+          onSuccess: () => {
+            toast({ title: "Transaction deleted" });
+            refreshAll();
+          },
+        },
+      );
     }
   };
 
-  const handleMarkReady = (id: number) => {
-    updateStatus.mutate({ id, data: { status: "ready" } }, {
-      onSuccess: () => { toast({ title: "Marked as Ready for pickup!" }); invalidateAll(); },
-    });
+  const advanceStatus = (tx: EnrichedTransaction, status: TransactionStatus) => {
+    updateStatus.mutate(
+      { id: tx.id, status },
+      {
+        onSuccess: () => {
+          toast({ title: `Job marked as ${STATUS_META[status]?.label || status}` });
+          refreshAll();
+        },
+        onError: (error) => {
+          toast({ title: "Update failed", description: errMsg(error), variant: "destructive" });
+        },
+      },
+    );
   };
 
-  const openCompleteDialog = (tx: TxFromList) => {
-    setCompleteDialogTx(tx);
+  const openInPos = (id: number) => {
+    sessionStorage.setItem(OPEN_JOB_KEY, String(id));
+    setLocation("/pos");
+  };
+
+  const openCompleteDialog = (tx: EnrichedTransaction) => {
+    setCompleteTx(tx);
     setCompletePayMethod("cash");
     setCompleteCashReceived(0);
   };
 
   const handleConfirmComplete = () => {
-    if (!completeDialogTx) return;
-    const tx = completeDialogTx;
-
-    updateStatus.mutate(
+    if (!completeTx) return;
+    const remaining = Math.max(0, (completeTx.total || 0) - (completeTx.amountPaid || 0));
+    completeJob.mutate(
       {
-        id: tx.id,
-        data: {
-          status: "complete",
-          paymentMethod: completePayMethod,
-          cashReceived: completePayMethod === "cash" ? completeCashReceived : undefined,
-        },
+        id: completeTx.id,
+        data: { items: [], total: completeTx.total || 0 },
+        paymentMethod: completePayMethod,
+        cashReceived: completePayMethod === "cash" ? (completeCashReceived > 0 ? completeCashReceived : remaining) : undefined,
       },
       {
         onSuccess: () => {
           toast({ title: "Job complete — payment recorded in drawer!" });
-          invalidateAll();
-          setCompleteDialogTx(null);
-
-          // Show receipt
-          setReceiptData({
-            id: tx.id,
-            customer: tx.customer,
-            unit: tx.unit,
-            technicianName: tx.technicianName,
-            items: tx.items,
-            total: tx.total,
-            profit: tx.profit,
-            paymentMethod: completePayMethod,
-            cashReceived: completePayMethod === "cash" ? completeCashReceived : 0,
-            change: completePayMethod === "cash" ? Math.max(0, completeCashReceived - tx.total) : 0,
-            createdAt: tx.createdAt,
-          });
-          setReceiptOpen(true);
+          setCompleteTx(null);
+          refreshAll();
         },
-      }
+        onError: (error) => {
+          toast({ title: "Could not complete job", description: errMsg(error), variant: "destructive" });
+        },
+      },
     );
   };
 
-  const changeAmount = completePayMethod === "cash" ? Math.max(0, completeCashReceived - (completeDialogTx?.total ?? 0)) : 0;
+  const submitDeposit = () => {
+    if (!depositTx) return;
+    const amount = Math.round(Number(depositAmount) * 100) / 100;
+    if (!amount || amount <= 0) {
+      toast({ title: "Enter a valid deposit amount", variant: "destructive" });
+      return;
+    }
+    recordDeposit.mutate(
+      { id: depositTx.id, data: { amount, method: depositMethod, note: depositNote || undefined } },
+      {
+        onSuccess: () => {
+          toast({ title: "Deposit recorded", description: `${formatCurrency(amount)} added to the job.` });
+          setDepositTx(null);
+          setDepositAmount("");
+          setDepositNote("");
+          refreshAll();
+        },
+        onError: (error) => {
+          toast({ title: "Deposit failed", description: errMsg(error), variant: "destructive" });
+        },
+      },
+    );
+  };
+
+  const handleCancel = (tx: EnrichedTransaction) => {
+    if (!confirm(`Cancel job #${tx.id}? Stock reservations will be released.`)) return;
+    cancelJob.mutate(
+      { id: tx.id },
+      {
+        onSuccess: () => {
+          toast({ title: "Job cancelled" });
+          refreshAll();
+        },
+        onError: (error) => {
+          toast({ title: "Cancel failed", description: errMsg(error), variant: "destructive" });
+        },
+      },
+    );
+  };
+
+  const displayData = filtered || [];
+  const changeAmount = completeTx && completePayMethod === "cash"
+    ? Math.max(0, completeCashReceived - Math.max(0, (completeTx.total || 0) - (completeTx.amountPaid || 0)))
+    : 0;
 
   return (
     <div className="space-y-4 flex flex-col h-[calc(100vh-2rem)]">
@@ -163,9 +256,9 @@ export default function TransactionsPage() {
             { label: "Total Sales", value: formatCurrency(stats.totalSales), color: "text-primary" },
             { label: "Total Profit", value: formatCurrency(stats.totalProfit), color: "text-green-500" },
             { label: "Jobs Done", value: String(stats.count), color: "" },
-            { label: "Cash Txns", value: String(stats.cashCount), color: "" },
-            { label: "GCash Txns", value: String(stats.gcashCount), color: "text-blue-500" },
-            { label: "Avg/Job", value: formatCurrency(stats.avgPerTransaction), color: "text-amber-600" },
+            { label: "Open Jobs", value: String(stats.pendingJobs ?? stats.pending ?? 0), color: "text-amber-600" },
+            { label: "Deposits Held", value: formatCurrency(stats.depositTotal ?? 0), color: "text-blue-500" },
+            { label: "Outstanding", value: formatCurrency(stats.outstandingTotal ?? 0), color: "text-red-500" },
           ].map((s) => (
             <Card key={s.label} className="bg-card">
               <CardContent className="p-4 space-y-1">
@@ -183,7 +276,7 @@ export default function TransactionsPage() {
             <div className="relative flex-1 min-w-[200px] max-w-md">
               <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
-                placeholder="Search by customer or unit..."
+                placeholder="Search by customer, phone, model, or job #..."
                 className="pl-8"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -192,9 +285,11 @@ export default function TransactionsPage() {
             <Tabs value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
               <TabsList>
                 <TabsTrigger value="all">All</TabsTrigger>
+                <TabsTrigger value="open">Open</TabsTrigger>
                 <TabsTrigger value="pending">Pending</TabsTrigger>
-                <TabsTrigger value="ready">Ready</TabsTrigger>
-                <TabsTrigger value="complete">Complete</TabsTrigger>
+                <TabsTrigger value="ready_for_pickup">Ready</TabsTrigger>
+                <TabsTrigger value="completed">Completed</TabsTrigger>
+                <TabsTrigger value="cancelled">Cancelled</TabsTrigger>
               </TabsList>
             </Tabs>
           </CardHeader>
@@ -203,84 +298,126 @@ export default function TransactionsPage() {
               <div className="space-y-3">
                 {isLoadingTx ? (
                   <div className="text-center py-8">Loading...</div>
-                ) : transactions.length === 0 ? (
+                ) : displayData.length === 0 ? (
                   <div className="text-center py-8 text-muted-foreground">No transactions found</div>
                 ) : (
-                  (transactions as TxFromList[]).map((tx) => (
-                    <Card key={tx.id} className={`overflow-hidden border-l-4 transition-colors ${
-                      tx.status === "pending" ? "border-l-amber-500" :
-                      tx.status === "ready" ? "border-l-blue-500" :
-                      "border-l-green-600"
-                    }`}>
+                  displayData.map((tx) => (
+                    <Card
+                      key={tx.id}
+                      className={`overflow-hidden border-l-4 transition-colors ${
+                        tx.status === "pending" ? "border-l-amber-500"
+                          : tx.status === "in_progress" ? "border-l-blue-500"
+                            : tx.status === "ready_for_pickup" ? "border-l-emerald-500"
+                              : tx.status === "completed" ? "border-l-green-600"
+                                : tx.status === "cancelled" ? "border-l-slate-400"
+                                  : "border-l-violet-500"
+                      }`}
+                    >
                       <div className="p-4">
                         <div className="flex justify-between items-start mb-2">
                           <div className="flex flex-wrap gap-2 items-center">
-                            <div className="font-bold text-lg">{tx.customer}</div>
-                            <Badge variant="outline" className="bg-muted text-xs">
-                              <Smartphone className="h-3 w-3 mr-1" />{tx.unit}
-                            </Badge>
+                            <div className="font-bold text-lg">{tx.customerName || tx.customer || "Walk-in"}</div>
+                            {(tx.customerPhone || tx.unit) && (
+                              <Badge variant="outline" className="bg-muted text-xs">
+                                <Smartphone className="h-3 w-3 mr-1" />{tx.customerPhone || tx.unit}
+                              </Badge>
+                            )}
+                            {tx.phoneModel && (
+                              <Badge variant="outline" className="bg-muted text-xs">
+                                <Smartphone className="h-3 w-3 mr-1" />{tx.phoneModel}
+                              </Badge>
+                            )}
                             <StatusBadge status={tx.status} />
-                            {tx.hasPreOrder && <Badge className="bg-amber-500 text-white text-xs">Pre-order</Badge>}
+                            <PaymentBadge status={tx.paymentStatus} method={tx.paymentMethod} />
+                            {tx.hasPreOrder && <Badge className="bg-cyan-600 text-white text-xs">Pre-order</Badge>}
                           </div>
                           <div className="text-right">
-                            <div className="font-bold text-xl text-primary">{formatCurrency(tx.total)}</div>
-                            {tx.status === "complete" && (
-                              <div className="text-xs text-green-500 font-medium mt-1">Profit: {formatCurrency(tx.profit)}</div>
+                            <div className="font-bold text-xl text-primary">{formatCurrency(tx.total || 0)}</div>
+                            {isCompletedTxn(tx) && (
+                              <div className="text-xs text-green-500 font-medium mt-1">Profit: {formatCurrency(tx.profit || 0)}</div>
+                            )}
+                            {tx.paymentStatus === "partial" && tx.remainingBalance !== undefined && (
+                              <div className="text-xs text-red-500 font-medium mt-1">
+                                Bal: {formatCurrency(tx.remainingBalance)}
+                              </div>
                             )}
                           </div>
                         </div>
 
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground mb-3">
-                          <span className="flex items-center"><Clock className="h-3 w-3 mr-1" />{formatDate(tx.createdAt)}</span>
-                          <span className="flex items-center"><Wrench className="h-3 w-3 mr-1" />Tech: {tx.technicianName}</span>
-                          {tx.paymentMethod ? (
-                            <span className="flex items-center">
-                              <CreditCard className="h-3 w-3 mr-1" />
-                              <span className={`uppercase font-bold ${tx.paymentMethod === "gcash" ? "text-blue-500" : "text-emerald-500"}`}>
-                                {tx.paymentMethod}
-                              </span>
-                            </span>
-                          ) : (
-                            <span className="flex items-center text-muted-foreground italic text-xs">
-                              <CreditCard className="h-3 w-3 mr-1" />Payment on pickup
+                          <span className="flex items-center"><Clock className="h-3 w-3 mr-1" />{formatDate(tx.createdAt ?? "")}</span>
+                          <span className="flex items-center"><Wrench className="h-3 w-3 mr-1" />Tech: {tx.technicianName || "None"}</span>
+                          {tx.jobNumber && (
+                            <span className="font-mono text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+                              {tx.jobNumber}
                             </span>
                           )}
-                          <span className="text-xs bg-muted/50 px-2 py-0.5 rounded-full ml-auto">
-                            Txn #{tx.id.toString().padStart(6, "0")}
-                          </span>
+                          {tx.paymentStatus === "partial" && (
+                            <span className="flex items-center text-blue-600">
+                              <HandCoins className="h-3 w-3 mr-1" />Paid {formatCurrency(tx.amountPaid || 0)}
+                            </span>
+                          )}
                         </div>
 
-                        <div className="bg-muted/30 rounded p-2 text-sm flex justify-between items-center gap-2">
-                          <div className="truncate flex-1">
+                        <div className="bg-muted/30 rounded p-2 text-sm flex flex-wrap justify-between items-center gap-2">
+                          <div className="truncate flex-1 min-w-[140px]">
                             <span className="font-semibold mr-2">Items:</span>
-                            {tx.items.map((i) => `${i.qty}x ${i.name}`).join(", ")}
+                            {tx.items.map((i) => `${i.quantity}x ${i.name}${i.isPreOrder ? " (PO)" : ""}`).join(", ") || "—"}
                           </div>
                           <div className="flex items-center gap-1 shrink-0">
                             {tx.status === "pending" && (
-                              <Button
-                                size="sm"
-                                className="h-7 bg-blue-500 hover:bg-blue-600 text-white text-xs"
-                                onClick={() => handleMarkReady(tx.id)}
-                                disabled={updateStatus.isPending}
-                              >
-                                Mark Ready
+                              <>
+                                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => advanceStatus(tx, "in_progress")} disabled={updateStatus.isPending}>
+                                  <Clock3 className="h-3 w-3 mr-1" /> Start Job
+                                </Button>
+                              </>
+                            )}
+                            {tx.status === "in_progress" && (
+                              <>
+                                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => advanceStatus(tx, "waiting_for_parts")} disabled={updateStatus.isPending}>
+                                  Waiting parts
+                                </Button>
+                                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => advanceStatus(tx, "ready_for_pickup")} disabled={updateStatus.isPending}>
+                                  <Bell className="h-3 w-3 mr-1" /> Ready
+                                </Button>
+                              </>
+                            )}
+                            {tx.status === "waiting_for_parts" && (
+                              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => advanceStatus(tx, "ready_for_pickup")} disabled={updateStatus.isPending}>
+                                <Bell className="h-3 w-3 mr-1" /> Mark Ready
                               </Button>
                             )}
-                            {tx.status === "ready" && (
-                              <Button
-                                size="sm"
-                                className="h-7 bg-green-600 hover:bg-green-700 text-white text-xs"
-                                onClick={() => openCompleteDialog(tx)}
-                                disabled={updateStatus.isPending}
-                              >
-                                Complete
+                            {tx.status === "pre_ordered" && (
+                              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => advanceStatus(tx, "ready_for_pickup")} disabled={updateStatus.isPending}>
+                                <Bell className="h-3 w-3 mr-1" /> Mark Ready
                               </Button>
                             )}
+                            {tx.status === "ready_for_pickup" && (
+                              <Button size="sm" className="h-7 bg-green-600 hover:bg-green-700 text-white text-xs" onClick={() => openCompleteDialog(tx)} disabled={completeJob.isPending}>
+                                <CheckCircle2 className="h-3 w-3 mr-1" /> Complete
+                              </Button>
+                            )}
+                            {isOpenTxn(tx) && (
+                              <>
+                                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openInPos(tx.id)}>
+                                  <PencilLine className="h-3 w-3 mr-1" /> Open in POS
+                                </Button>
+                                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setDepositTx(tx)}>
+                                  <HandCoins className="h-3 w-3 mr-1" /> Deposit
+                                </Button>
+                                <Button size="sm" variant="ghost" className="h-7 w-7 text-destructive p-0" onClick={() => handleCancel(tx)}>
+                                  <XCircle className="h-4 w-4" />
+                                </Button>
+                              </>
+                            )}
+                            <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setDetailsTx(tx)}>
+                              <Eye className="h-4 w-4" />
+                            </Button>
                             <Button
                               variant="ghost"
                               size="icon"
                               className="h-7 w-7 text-destructive hover:bg-destructive/20"
-                              onClick={() => handleDelete(tx.id)}
+                              onClick={() => handleDelete(tx)}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -308,13 +445,13 @@ export default function TransactionsPage() {
                 </CardHeader>
                 <CardContent className="p-0">
                   <ul className="divide-y">
-                    {section.data.map((m, i) => (
+                    {(section.data || []).map((m, i) => (
                       <li key={i} className="flex justify-between px-4 py-2 text-sm">
                         <span className="truncate mr-2 font-medium">{m.name}</span>
                         <span className="font-bold text-primary">{m.count}</span>
                       </li>
                     ))}
-                    {section.data.length === 0 && (
+                    {(section.data || []).length === 0 && (
                       <li className="px-4 py-4 text-center text-muted-foreground text-sm">No data</li>
                     )}
                   </ul>
@@ -325,8 +462,8 @@ export default function TransactionsPage() {
         )}
       </div>
 
-      {/* Complete Dialog — collect payment method */}
-      <Dialog open={!!completeDialogTx} onOpenChange={(open) => !open && setCompleteDialogTx(null)}>
+      {/* Complete Dialog */}
+      <Dialog open={Boolean(completeTx)} onOpenChange={(open) => !open && setCompleteTx(null)}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -334,27 +471,38 @@ export default function TransactionsPage() {
               Complete Job — Collect Payment
             </DialogTitle>
           </DialogHeader>
-          {completeDialogTx && (
+          {completeTx && (
             <div className="space-y-4 py-2">
               <div className="bg-muted/40 rounded-lg p-3 text-sm space-y-1">
-                <div className="font-bold text-base">{completeDialogTx.customer}</div>
-                <div className="text-muted-foreground">{completeDialogTx.unit} · Tech: {completeDialogTx.technicianName}</div>
-                <div className="font-bold text-primary text-lg pt-1">Total: {formatCurrency(completeDialogTx.total)}</div>
+                <div className="font-bold text-base">{completeTx.customerName}</div>
+                <div className="text-muted-foreground">
+                  {completeTx.jobNumber} · {completeTx.customerPhone || ""} {completeTx.phoneModel || ""} · Tech: {completeTx.technicianName || "None"}
+                </div>
+                <div className="flex justify-between">
+                  <span>Total</span>
+                  <span className="font-semibold">{formatCurrency(completeTx.total || 0)}</span>
+                </div>
+                {completeTx.amountPaid ? (
+                  <div className="flex justify-between">
+                    <span>Already paid (deposits)</span>
+                    <span className="font-semibold text-blue-600">{formatCurrency(completeTx.amountPaid)}</span>
+                  </div>
+                ) : null}
+                <div className="flex justify-between border-t border-dashed pt-1">
+                  <span className="font-bold">Balance due</span>
+                  <span className="font-bold text-primary">{formatCurrency(Math.max(0, (completeTx.total || 0) - (completeTx.amountPaid || 0)))}</span>
+                </div>
               </div>
 
               <div className="space-y-2">
                 <Label>Payment Method</Label>
                 <div className="flex gap-2">
-                  <Button
-                    variant={completePayMethod === "cash" ? "default" : "outline"}
-                    className="flex-1"
-                    onClick={() => setCompletePayMethod("cash")}
-                  >CASH</Button>
-                  <Button
-                    variant={completePayMethod === "gcash" ? "default" : "outline"}
-                    className={completePayMethod === "gcash" ? "bg-blue-600 hover:bg-blue-700 text-white flex-1" : "flex-1"}
-                    onClick={() => setCompletePayMethod("gcash")}
-                  >GCASH</Button>
+                  <Button variant={completePayMethod === "cash" ? "default" : "outline"} className="flex-1" onClick={() => setCompletePayMethod("cash")}>
+                    <Banknote className="mr-2 h-4 w-4" />CASH
+                  </Button>
+                  <Button variant={completePayMethod === "gcash" ? "default" : "outline"} className="flex-1" onClick={() => setCompletePayMethod("gcash")}>
+                    <CreditCard className="mr-2 h-4 w-4" />GCASH
+                  </Button>
                 </div>
               </div>
 
@@ -365,15 +513,13 @@ export default function TransactionsPage() {
                     type="number"
                     value={completeCashReceived || ""}
                     onChange={(e) => setCompleteCashReceived(parseFloat(e.target.value) || 0)}
-                    placeholder="0.00"
+                    placeholder={String(Math.max(0, (completeTx.total || 0) - (completeTx.amountPaid || 0)))}
                     className="text-lg font-bold"
                     autoFocus
                   />
                   {completeCashReceived > 0 && (
                     <div className={`text-sm font-semibold ${changeAmount >= 0 ? "text-green-600" : "text-destructive"}`}>
-                      {changeAmount >= 0
-                        ? `Change: ${formatCurrency(changeAmount)}`
-                        : `Short by: ${formatCurrency(Math.abs(changeAmount))}`}
+                      {changeAmount >= 0 ? `Change: ${formatCurrency(changeAmount)}` : `Short by: ${formatCurrency(Math.abs(changeAmount))}`}
                     </div>
                   )}
                 </div>
@@ -385,69 +531,171 @@ export default function TransactionsPage() {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCompleteDialogTx(null)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setCompleteTx(null)}>Cancel</Button>
             <Button
               className="bg-green-600 hover:bg-green-700 gap-2"
               onClick={handleConfirmComplete}
-              disabled={updateStatus.isPending}
+              disabled={completeJob.isPending}
             >
               <CheckCircle2 className="h-4 w-4" />
-              {updateStatus.isPending ? "Saving..." : "Confirm Complete"}
+              {completeJob.isPending ? "Saving..." : "Confirm Complete"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* Receipt Modal */}
-      <Dialog open={receiptOpen} onOpenChange={setReceiptOpen}>
-        <DialogContent className="max-w-md">
+      {/* Deposit Dialog */}
+      <Dialog open={Boolean(depositTx)} onOpenChange={(open) => !open && setDepositTx(null)}>
+        <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Job Slip / Receipt</DialogTitle>
+            <DialogTitle className="flex items-center gap-2">
+              <HandCoins className="h-5 w-5 text-blue-500" />
+              Record Deposit
+            </DialogTitle>
           </DialogHeader>
-          {receiptData && (
-            <div className="p-4 bg-white text-black rounded">
-              <div className="text-center mb-4 border-b pb-3 border-dashed border-gray-400">
-                <h2 className="text-lg font-bold uppercase">JEGZ MOBILE REPAIR</h2>
-                <p className="text-xs text-gray-500">Job Order — COMPLETE</p>
-              </div>
-              <div className="text-sm space-y-1 mb-4">
-                <div className="flex justify-between"><span className="text-gray-500">Date:</span><span>{new Date().toLocaleString()}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Job #:</span><span>#{receiptData.id?.toString().padStart(6, "0")}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Customer:</span><span className="font-semibold">{receiptData.customer}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Unit:</span><span>{receiptData.unit}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Technician:</span><span>{receiptData.technicianName}</span></div>
-                <div className="flex justify-between"><span className="text-gray-500">Payment:</span><span className="font-bold uppercase">{receiptData.paymentMethod}</span></div>
-              </div>
-              <div className="border-t border-b border-dashed border-gray-400 py-2 mb-4">
-                {receiptData.items?.map((item: any, i: number) => (
-                  <div key={i} className="text-sm flex justify-between mb-1">
-                    <span>{item.qty}x {item.name}{item.isPreOrder ? " [PRE]" : ""}</span>
-                    <span>{formatCurrency(item.price * item.qty)}</span>
-                  </div>
-                ))}
-              </div>
-              <div className="text-sm space-y-1">
-                <div className="flex justify-between font-bold text-base pt-2 border-t border-gray-200">
-                  <span>TOTAL</span><span>{formatCurrency(receiptData.total)}</span>
+          {depositTx && (
+            <div className="space-y-4 py-2">
+              <div className="bg-muted/40 rounded-lg p-3 text-sm space-y-1">
+                <div className="font-bold">{depositTx.customerName}</div>
+                <div className="flex justify-between">
+                  <span>Total</span><span className="font-semibold">{formatCurrency(depositTx.total || 0)}</span>
                 </div>
-                {receiptData.paymentMethod === "cash" && receiptData.cashReceived > 0 && (
-                  <>
-                    <div className="flex justify-between text-gray-600"><span>Cash Received</span><span>{formatCurrency(receiptData.cashReceived)}</span></div>
-                    <div className="flex justify-between text-gray-600"><span>Change</span><span>{formatCurrency(receiptData.change)}</span></div>
-                  </>
-                )}
+                <div className="flex justify-between">
+                  <span>Paid so far</span><span className="font-semibold text-blue-600">{formatCurrency(depositTx.amountPaid || 0)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Remaining</span><span className="font-semibold text-red-500">{formatCurrency(depositTx.remainingBalance ?? 0)}</span>
+                </div>
               </div>
-              <div className="mt-4 p-2 bg-green-50 border border-green-200 rounded text-center text-xs text-green-800 font-medium">
-                ✅ COMPLETE — Recorded in {receiptData.paymentMethod === "gcash" ? "GCash" : "Cash"} Drawer
+              <div className="space-y-2">
+                <Label>Deposit amount (₱)</Label>
+                <Input type="number" min={0} value={depositAmount} onChange={(e) => setDepositAmount(e.target.value)} placeholder="0.00" autoFocus />
               </div>
+              <div className="space-y-2">
+                <Label>Method</Label>
+                <div className="flex gap-2">
+                  <Button variant={depositMethod === "cash" ? "default" : "outline"} className="flex-1" onClick={() => setDepositMethod("cash")}>
+                    <Banknote className="mr-2 h-4 w-4" />Cash
+                  </Button>
+                  <Button variant={depositMethod === "gcash" ? "default" : "outline"} className="flex-1" onClick={() => setDepositMethod("gcash")}>
+                    <CreditCard className="mr-2 h-4 w-4" />GCash
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Note (optional)</Label>
+                <Textarea rows={2} value={depositNote} onChange={(e) => setDepositNote(e.target.value)} />
+              </div>
+              <Button className="w-full" onClick={submitDeposit} disabled={recordDeposit.isPending}>
+                {recordDeposit.isPending ? "Recording..." : "Record deposit"}
+              </Button>
             </div>
           )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => window.print()}>
-              <Printer className="h-4 w-4 mr-2" /> Print
-            </Button>
-            <Button onClick={() => setReceiptOpen(false)}>Done</Button>
-          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Details Dialog */}
+      <Dialog open={Boolean(detailsTx)} onOpenChange={(open) => !open && setDetailsTx(null)}>
+        <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Eye className="h-5 w-5 text-primary" />
+              Job Details
+            </DialogTitle>
+          </DialogHeader>
+          {detailsTx && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                {detailsTx.jobNumber && <span className="font-mono text-primary font-bold">{detailsTx.jobNumber}</span>}
+                <StatusBadge status={detailsTx.status} />
+                <PaymentBadge status={detailsTx.paymentStatus} method={detailsTx.paymentMethod} />
+              </div>
+              <div className="grid gap-2 text-sm sm:grid-cols-2">
+                <div>
+                  <p className="text-xs uppercase text-muted-foreground font-medium">Customer</p>
+                  <p className="flex items-center gap-1"><User2 className="h-3 w-3" />{detailsTx.customerName}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase text-muted-foreground font-medium">Phone</p>
+                  <p>{detailsTx.customerPhone || "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase text-muted-foreground font-medium">Device</p>
+                  <p>{detailsTx.phoneModel || detailsTx.phoneBrand || "—"}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase text-muted-foreground font-medium">Technician</p>
+                  <p>{detailsTx.technicianName || "None"}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase text-muted-foreground font-medium">Created</p>
+                  <p>{formatDate(detailsTx.createdAt ?? "")}</p>
+                </div>
+                <div>
+                  <p className="text-xs uppercase text-muted-foreground font-medium">Finished</p>
+                  <p>{detailsTx.completedAt ? formatDate(detailsTx.completedAt) : "—"}</p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-xs uppercase text-muted-foreground font-medium mb-1">Items</p>
+                <div className="space-y-1 text-sm">
+                  {detailsTx.items.map((item, i) => (
+                    <div key={i} className="flex justify-between gap-2">
+                      <span className="truncate">
+                        {item.quantity}x {item.name}
+                        {item.isPreOrder ? " [PRE-ORDER]" : ""}
+                        {item.isCustom ? " [CUSTOM]" : ""}
+                      </span>
+                      <span className="font-medium shrink-0">{formatCurrency((item.price || 0) * (item.quantity || 1))}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <Separator />
+              <div className="grid gap-1 text-sm">
+                <div className="flex justify-between"><span>Total</span><span className="font-bold">{formatCurrency(detailsTx.total || 0)}</span></div>
+                <div className="flex justify-between"><span>Amount paid</span><span>{formatCurrency(detailsTx.amountPaid || 0)}</span></div>
+                <div className="flex justify-between"><span>Remaining</span><span className={detailsTx.remainingBalance && detailsTx.remainingBalance > 0 ? "text-red-500 font-medium" : ""}>{formatCurrency(detailsTx.remainingBalance ?? 0)}</span></div>
+                {isCompletedTxn(detailsTx) && (
+                  <div className="flex justify-between"><span>Profit</span><span className="text-green-600 font-medium">{formatCurrency(detailsTx.profit || 0)}</span></div>
+                )}
+              </div>
+
+              {(detailsTx.customerComplaint || detailsTx.diagnosis || detailsTx.technicianNotes || detailsTx.notes) && (
+                <>
+                  <Separator />
+                  <div className="space-y-2 text-sm">
+                    {detailsTx.customerComplaint && (
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground font-medium">Customer complaint</p>
+                        <p>{detailsTx.customerComplaint}</p>
+                      </div>
+                    )}
+                    {detailsTx.diagnosis && (
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground font-medium">Diagnosis</p>
+                        <p>{detailsTx.diagnosis}</p>
+                      </div>
+                    )}
+                    {detailsTx.technicianNotes && (
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground font-medium">Technician notes</p>
+                        <p>{detailsTx.technicianNotes}</p>
+                      </div>
+                    )}
+                    {detailsTx.notes && (
+                      <div>
+                        <p className="text-xs uppercase text-muted-foreground font-medium">Notes</p>
+                        <p>{detailsTx.notes}</p>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </div>

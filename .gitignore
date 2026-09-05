@@ -1,49 +1,76 @@
 # See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
 
-# compiled output
-dist
-tmp
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+
+# ─── Build / generated output ────────────────────────────────────────────────
+dist/
+build/
 out-tsc
+.vite/
+dev-dist/
+.turbo/
+coverage/
+tmp
+
+# ─── TypeScript build/cache files ───────────────────────────────────────────
 *.tsbuildinfo
-.expo
-.expo-shared
 
-# dependencies
-node_modules
+# ─── Logs ───────────────────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+testem.log
 
-# IDEs and editors
-/.idea
+# ─── Environment / secrets ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ─── Local databases & backups ──────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.db3
+*.sqlite-wal
+*.sqlite-shm
+jegz-pos-backup-*.json
+*.backup.json
+
+# ─── Temporary / cache files ────────────────────────────────────────────────
+*.tmp
+*.temp
+.cache/
+.eslintcache
+/typings
+
+# ─── OS / editor files ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 .project
 .classpath
 .c9/
 *.launch
 .settings/
 *.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# misc
 /.sass-cache
 /connect.lock
-/coverage
 /libpeerconnection.log
-npm-debug.log
-yarn-error.log
-testem.log
-/typings
 
-# System Files
-.DS_Store
-Thumbs.db
-
-.cursor/rules/nx-rules.mdc
-.github/instructions/nx.instructions.md
-
-# Replit
+# ─── Replit / platform files ────────────────────────────────────────────────
 .cache/
 .local/
+.expo
+.expo-shared
+
+# ─── Local workspace overrides ──────────────────────────────────────────────
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md

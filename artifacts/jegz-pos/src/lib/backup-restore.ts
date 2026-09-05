@@ -1,9 +1,21 @@
 /**
  * Backup and Restore System
- * Allows users to export and import their POS data
+ * Allows users to export and import their POS data.
+ *
+ * Version 2.0.0 preserves all job data (customer/phone/device details, job
+ * numbers, statuses, pre-orders, markups, payment/deposit tracking, repair
+ * notes). Import is backward compatible: 1.0.0 backups are migrated safely.
+ *
+ * Version 2.1.0 explicitly tracks the settings table (which holds the shop
+ * profile and the base64 shop logo) in the backup so the shop identity,
+ * logo, receipt footer, payment options, and all preferences are preserved
+ * through export and restore.
  */
 
 import { localDb, LOCAL_TABLES } from './local-db';
+import { normalizeStatus, paymentStatusFor, ensureJobNumbers } from './offline-data-services';
+
+export const BACKUP_VERSION = '2.1.0';
 
 export interface PosBackup {
   version: string;
@@ -14,6 +26,7 @@ export interface PosBackup {
     serviceCount: number;
     transactionCount: number;
     transactionItemCount: number;
+    settingsCount: number;
   };
 }
 
@@ -23,7 +36,7 @@ export interface PosBackup {
 export async function exportBackup(): Promise<Blob> {
   try {
     const backup: PosBackup = {
-      version: '1.0.0',
+      version: BACKUP_VERSION,
       exportDate: new Date().toISOString(),
       data: {},
       metadata: {
@@ -31,6 +44,7 @@ export async function exportBackup(): Promise<Blob> {
         serviceCount: 0,
         transactionCount: 0,
         transactionItemCount: 0,
+        settingsCount: 0,
       },
     };
 
@@ -44,6 +58,7 @@ export async function exportBackup(): Promise<Blob> {
       if (table === 'services') backup.metadata.serviceCount = tableData.length;
       if (table === 'transactions') backup.metadata.transactionCount = tableData.length;
       if (table === 'transactionItems') backup.metadata.transactionItemCount = tableData.length;
+      if (table === 'settings') backup.metadata.settingsCount = tableData.length;
     }
 
     // Create blob and return
@@ -110,6 +125,61 @@ export function validateBackup(data: any): { valid: boolean; error?: string } {
   return { valid: true };
 }
 
+const isPhoneString = (value: unknown): boolean =>
+  typeof value === 'string' && /^[0-9+\-\s()]{7,}$/.test(value.trim());
+
+/**
+ * Migrate legacy backup rows into the current schema with safe defaults.
+ * Mutates rows in place.
+ */
+function migrateRow(table: string, row: any) {
+  if (!row || typeof row !== 'object') return;
+
+  if (table === 'transactions') {
+    const customerName = row.customerName || row.customer || 'Walk-in';
+    let customerPhone = row.customerPhone;
+    if (!customerPhone && isPhoneString(row.unit)) customerPhone = row.unit;
+    const phoneBrand = row.phoneBrand;
+    const phoneModel = row.phoneModel;
+    const status = normalizeStatus(row.status || 'pending');
+    const total = Number.isFinite(row.totalAmount) ? row.totalAmount : Number.isFinite(row.total) ? row.total : 0;
+    const amountPaid = row.amountPaid || 0;
+    const paymentStatus = row.paymentStatus || paymentStatusFor(total, amountPaid);
+    const remainingBalance = Number.isFinite(row.remainingBalance)
+      ? row.remainingBalance
+      : Math.max(0, total - amountPaid);
+
+    row.customerName = customerName;
+    row.customer = customerName;
+    row.customerPhone = customerPhone;
+    if (customerPhone !== undefined && customerPhone !== null) row.unit = customerPhone;
+    row.phoneBrand = phoneBrand;
+    row.phoneModel = phoneModel;
+    row.status = status;
+    row.total = total;
+    row.totalAmount = total;
+    row.amountPaid = amountPaid;
+    row.remainingBalance = remainingBalance;
+    row.paymentStatus = paymentStatus;
+    row.isPreOrder = Boolean(row.isPreOrder);
+    // job numbers are backfilled after import so they never collide
+    if (!row.jobNumber) row.jobNumber = undefined;
+  }
+
+  if (table === 'transactionItems') {
+    row.isPreOrder = row.isPreOrder === true;
+    row.isCustom = row.isCustom === true;
+    row.savedToList = row.savedToList === true;
+    if (typeof row.cost !== 'number') row.cost = undefined;
+  }
+
+  if (table === 'products') {
+    if (typeof row.reservedStock !== 'number' || !Number.isFinite(row.reservedStock)) {
+      row.reservedStock = 0;
+    }
+  }
+}
+
 /**
  * Import backup data
  * @param backup The backup data to import
@@ -147,27 +217,46 @@ export async function importBackup(
       const dbTable = (localDb as any)[table];
       if (!dbTable) continue;
 
+      // Migrate legacy rows into the current schema
+      const migrated = data.map(row => {
+        migrateRow(table, row);
+        return { ...row };
+      });
+
       if (mergeMode) {
-        // In merge mode, add items (potential duplicates depending on IDs)
-        for (const item of data) {
+        for (const item of migrated) {
           try {
-            await dbTable.add(item);
+            // Drop primary keys in merge mode so rows never clash
+            const { id: _dropped, ...rest } = item;
+            await dbTable.add({ ...rest, id: undefined });
             totalImported++;
           } catch (error) {
-            // Skip items that fail to add (e.g., duplicate keys)
             console.warn(`Skipped item in table ${table}:`, error);
           }
         }
       } else {
-        // In replace mode, use bulkAdd for better performance
         try {
-          await dbTable.bulkAdd(data);
-          totalImported += data.length;
+          await dbTable.bulkAdd(migrated);
+          totalImported += migrated.length;
         } catch (error) {
           console.error(`Error importing table ${table}:`, error);
           throw error;
         }
       }
+    }
+
+    // Ensure every transaction has a unique job number (backfills safe values).
+    await ensureJobNumbers();
+
+    // Ensure the pre-order markup default exists.
+    const existingMarkup = await localDb.settings.where('key').equals('preOrderMarkup').first();
+    if (!existingMarkup) {
+      await localDb.settings.add({
+        key: 'preOrderMarkup',
+        value: 20,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as any);
     }
 
     // Mark database as seeded to prevent re-seeding
