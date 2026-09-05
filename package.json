@@ -4,7 +4,8 @@
   "license": "MIT",
   "scripts": {
     "dev": "pnpm --filter @workspace/jegz-pos dev",
-    "build": "pnpm --filter @workspace/jegz-pos build",
+    "build": "pnpm run build:web",
+    "build:web": "pnpm --filter @workspace/jegz-pos build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
