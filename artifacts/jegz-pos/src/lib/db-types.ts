@@ -41,10 +41,17 @@ export interface Product {
 export interface Service {
   id: number;
   name: string;
+  /** Legacy field (e.g. repair/maintenance/custom/android). Kept for compatibility. */
   type: string;
+  /** Selling/labor price. */
   price: number;
+  /** Direct cost of performing the service (0 for pure labor). */
   cost?: number;
   duration?: number;
+  /** Human-friendly category for grouping (e.g. Repair, Maintenance, General). */
+  category?: string;
+  /** Whether the service is available for new POS sales (default true). */
+  active?: boolean;
   createdAt?: string;
   updatedAt?: string;
   [key: string]: unknown;
@@ -129,7 +136,7 @@ export interface Transaction {
   amountPaid?: number;
   remainingBalance?: number;
   paymentStatus?: JobPaymentStatus;
-  /** Unique readable job number, e.g. JOB-20260905-0001. */
+  /** Unique readable job number, e.g. JEGZ-2026-000001. */
   jobNumber?: string;
   notes?: string;
   /** Repair notes. */

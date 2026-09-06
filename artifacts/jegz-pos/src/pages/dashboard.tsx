@@ -1,6 +1,15 @@
 import { useState } from "react";
-import { useGetDashboard, useShopProfile } from "@/lib/offline-api";
-import { formatCurrency } from "@/lib/utils";
+import { useQueryClient } from "@tanstack/react-query";
+import {
+  useGetDashboard,
+  useShopProfile,
+  useGetLastBackupTime,
+  downloadBackup,
+  LAST_BACKUP_QUERY_KEY,
+  DEFAULT_REORDER_POINT,
+} from "@/lib/offline-api";
+import { useToast } from "@/hooks/use-toast";
+import { formatCurrency, formatDate } from "@/lib/utils";
 import {
   Card,
   CardContent,
@@ -16,6 +25,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Tabs,
   TabsList,
@@ -28,6 +38,8 @@ import {
   TrendingUp,
   Wallet,
   CheckCircle2,
+  DatabaseBackup,
+  Download,
 } from "lucide-react";
 import {
   AreaChart,
@@ -92,6 +104,27 @@ function ChartTooltip({
 export default function Dashboard() {
   const [period, setPeriod] = useState<Period>("today");
   const shopProfile = useShopProfile();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const { data: lastBackup } = useGetLastBackupTime();
+  const [backingUp, setBackingUp] = useState(false);
+
+  const handleBackupNow = async () => {
+    setBackingUp(true);
+    try {
+      await downloadBackup();
+      toast({ title: "Backup downloaded", description: "Your POS data backup was created on this device." });
+      queryClient.invalidateQueries({ queryKey: LAST_BACKUP_QUERY_KEY });
+    } catch (error) {
+      toast({
+        title: "Failed to download backup",
+        description: error instanceof Error ? error.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setBackingUp(false);
+    }
+  };
 
   const {
     data: rawDashboard,
@@ -230,6 +263,29 @@ export default function Dashboard() {
             </TabsTrigger>
           </TabsList>
         </Tabs>
+      </div>
+
+      {/* BACKUP STATUS */}
+      <div className="flex flex-col gap-3 rounded-lg border bg-card px-4 py-3 sm:flex-row sm:items-center">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <DatabaseBackup className="h-4 w-4 shrink-0 text-primary" />
+          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground shrink-0">
+            Backup Status
+          </span>
+          <span className="truncate text-sm">
+            {lastBackup ? (
+              <>
+                Last backup: <strong>{formatDate(lastBackup)}</strong>
+              </>
+            ) : (
+              "No backup created yet."
+            )}
+          </span>
+        </div>
+        <Button size="sm" onClick={handleBackupNow} disabled={backingUp} className="shrink-0 gap-2">
+          <Download className="h-4 w-4" />
+          {backingUp ? "Backing up..." : "Backup Now"}
+        </Button>
       </div>
 
       {/* KPI CARDS */}
@@ -1072,32 +1128,46 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* REORDER ALERT */}
-      {dashboard.lowStockProducts
-        .length > 0 && (
-          <Card className="bg-destructive/10 border-destructive/30">
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2 text-destructive">
-                <AlertTriangle className="h-4 w-4" />
+      {/* LOW STOCK ALERTS */}
+      <Card
+        className={
+          dashboard.lowStockProducts.length > 0
+            ? "bg-destructive/10 border-destructive/30"
+            : "bg-card"
+        }
+      >
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Low Stock Alerts
+          </CardTitle>
+        </CardHeader>
 
-                Reorder Alert —{" "}
-                {
-                  dashboard.lowStockProducts
-                    .length
-                }{" "}
-                item
-                {dashboard.lowStockProducts
-                  .length !== 1
-                  ? "s"
-                  : ""}{" "}
+        <CardContent>
+          {dashboard.lowStockProducts.length === 0 ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <CheckCircle2 className="h-4 w-4 text-green-600" />
+              All stock levels OK
+            </p>
+          ) : (
+            <>
+              <p className="mb-3 text-xs text-muted-foreground">
+                {dashboard.lowStockProducts.length} product
+                {dashboard.lowStockProducts.length !== 1 ? "s" : ""} at or
                 below reorder point
-              </CardTitle>
-            </CardHeader>
+              </p>
 
-            <CardContent>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                {dashboard.lowStockProducts.map(
-                  (product) => (
+                {dashboard.lowStockProducts.map((product) => {
+                  const available = Math.max(
+                    0,
+                    (product.stock ?? 0) - (product.reservedStock ?? 0),
+                  );
+                  const threshold =
+                    product.reorderPoint ?? DEFAULT_REORDER_POINT;
+                  const outOfStock = available === 0;
+
+                  return (
                     <div
                       key={product.id}
                       className="flex items-center justify-between rounded-md bg-card/50 px-3 py-2"
@@ -1108,37 +1178,34 @@ export default function Dashboard() {
                         </p>
 
                         <p className="text-xs text-muted-foreground">
-                          {product.category} ·
-                          Reorder at{" "}
-                          {
-                            product.reorderPoint
-                          }
+                          {product.category}
+                          {product.category ? " · " : ""}
+                          Threshold {threshold}
                         </p>
                       </div>
 
                       <Badge
                         variant={
-                          product.stock === 0
-                            ? "destructive"
-                            : "secondary"
+                          outOfStock ? "destructive" : "secondary"
                         }
                         className={
-                          product.stock > 0
+                          !outOfStock
                             ? "bg-amber-500/20 text-amber-400 border-amber-500/30"
                             : ""
                         }
                       >
-                        {product.stock === 0
+                        {outOfStock
                           ? "OUT"
-                          : `${product.stock} left`}
+                          : `${available} left`}
                       </Badge>
                     </div>
-                  ),
-                )}
+                  );
+                })}
               </div>
-            </CardContent>
-          </Card>
-        )}
+            </>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

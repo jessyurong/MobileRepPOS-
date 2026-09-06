@@ -5,6 +5,7 @@ import {
   useUpdateProduct,
   useDeleteProduct,
   getListProductsQueryKey,
+  DEFAULT_REORDER_POINT,
 } from "@/lib/offline-api";
 import { formatCurrency } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
@@ -47,12 +48,12 @@ export default function InventoryPage() {
     cost: 0,
     sellingPrice: 0,
     stock: 0,
-    reorderPoint: 5,
+    reorderPoint: DEFAULT_REORDER_POINT,
   });
 
   const openAdd = () => {
     setEditingId(null);
-    setFormData({ name: "", category: "", deviceType: "both", cost: 0, sellingPrice: 0, stock: 0, reorderPoint: 5 });
+    setFormData({ name: "", category: "", deviceType: "both", cost: 0, sellingPrice: 0, stock: 0, reorderPoint: DEFAULT_REORDER_POINT });
     setModalOpen(true);
   };
 
@@ -65,7 +66,7 @@ export default function InventoryPage() {
       cost: product.cost,
       sellingPrice: product.sellingPrice,
       stock: product.stock,
-      reorderPoint: product.reorderPoint ?? 5,
+      reorderPoint: product.reorderPoint ?? DEFAULT_REORDER_POINT,
     });
     setModalOpen(true);
   };
@@ -154,9 +155,11 @@ export default function InventoryPage() {
                 <TableRow><TableCell colSpan={8} className="text-center py-8 text-muted-foreground">No products found</TableCell></TableRow>
               ) : (
                 products.map((product) => {
-                  const reorderPoint = (product as any).reorderPoint ?? 5;
-                  const outOfStock = product.stock === 0;
-                  const lowStock = product.stock > 0 && product.stock <= reorderPoint;
+                  const reorderPoint = (product as any).reorderPoint ?? DEFAULT_REORDER_POINT;
+                  const reserved = (product as any).reservedStock ?? 0;
+                  const available = Math.max(0, (product.stock ?? 0) - reserved);
+                  const outOfStock = available === 0;
+                  const lowStock = !outOfStock && available <= reorderPoint;
                   const cost = product.cost ?? 0;
                   const sellingPrice = (product as any).sellingPrice ?? product.price ?? 0;
                   return (
@@ -168,12 +171,17 @@ export default function InventoryPage() {
                       <TableCell className="text-right font-semibold text-primary">{formatCurrency(sellingPrice)}</TableCell>
                       <TableCell className="text-right text-green-500">{formatCurrency(sellingPrice - cost)}</TableCell>
                       <TableCell className="text-center">
-                        <Badge
-                          variant={outOfStock ? "destructive" : lowStock ? "secondary" : "default"}
-                          className={lowStock ? "bg-amber-500 hover:bg-amber-600 text-white" : outOfStock ? "" : "bg-green-600 hover:bg-green-700"}
-                        >
-                          {product.stock}
-                        </Badge>
+                        <div className="flex items-center justify-center gap-1.5">
+                          <Badge
+                            variant={outOfStock ? "destructive" : lowStock ? "secondary" : "default"}
+                            className={lowStock ? "bg-amber-500 hover:bg-amber-600 text-white" : outOfStock ? "" : "bg-green-600 hover:bg-green-700"}
+                          >
+                            {outOfStock ? "0 · OUT" : lowStock ? `${available} · LOW` : available}
+                          </Badge>
+                          {reserved > 0 && (
+                            <span className="text-[10px] text-muted-foreground">({reserved} res.)</span>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-2">
@@ -239,9 +247,9 @@ export default function InventoryPage() {
                 <Input type="number" value={formData.stock || ""} onChange={(e) => setFormData({ ...formData, stock: parseInt(e.target.value) || 0 })} />
               </div>
               <div className="space-y-2">
-                <Label>Reorder Alert At</Label>
-                <Input type="number" value={formData.reorderPoint || ""} onChange={(e) => setFormData({ ...formData, reorderPoint: parseInt(e.target.value) || 1 })} placeholder="5" />
-                <p className="text-xs text-muted-foreground">Alert when stock drops to this level</p>
+                <Label>Low Stock Threshold</Label>
+                <Input type="number" value={formData.reorderPoint || ""} onChange={(e) => setFormData({ ...formData, reorderPoint: parseInt(e.target.value) || 1 })} placeholder={`${DEFAULT_REORDER_POINT}`} />
+                <p className="text-xs text-muted-foreground">Alert when stock is at or below this level</p>
               </div>
             </div>
           </div>

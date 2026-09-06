@@ -71,6 +71,9 @@ export type {
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 export const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** Default low-stock threshold when a product has no reorderPoint set. */
+export const DEFAULT_REORDER_POINT = 3;
+
 const nowISO = () => new Date().toISOString();
 
 export function isCompletedStatus(status: unknown): boolean {
@@ -146,26 +149,24 @@ export function getJobProfit(items: TransactionItem[], total?: number): number {
 }
 
 // ─── Job number generator ───────────────────────────────────────────────────
-function yyyymmdd(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}${m}${d}`;
-}
-
 /**
- * Generate a unique human-readable job number: JOB-YYYYMMDD-NNNN.
- * Uniqueness is guaranteed by a per-day counter stored in `meta`,
- * seeded from any existing job numbers for today.
+ * Generate a unique human-readable job number: JEGZ-YYYY-NNNNNN.
+ * Uniqueness is guaranteed by a per-year global counter stored in `meta`
+ * (e.g. `jobSeqGlobal_2026`). The counter is persisted in the same database
+ * as the transactions, seeded on first use from the highest existing JEGZ
+ * number for that year, and only ever increases. This keeps numbers stable
+ * across refreshes/restarts, survives backup/restore (meta is part of the
+ * backup), and means deleted numbers are never re-used.
  */
 export async function generateJobNumber(): Promise<string> {
-  const dateKey = yyyymmdd(new Date());
-  const counterKey = `jobSeq_${dateKey}`;
+  const year = String(new Date().getFullYear());
+  const counterKey = `jobSeqGlobal_${year}`;
   return localDb.transaction('rw', localDb.meta, localDb.transactions, async () => {
     const meta = await localDb.meta.get(counterKey);
-    let seq = typeof meta?.value === 'number' ? meta.value : 0;
+    let seq =
+      typeof meta?.value === 'number' && Number.isFinite(meta.value) ? meta.value : 0;
     if (!meta) {
-      const prefix = `JOB-${dateKey}-`;
+      const prefix = `JEGZ-${year}-`;
       const existing = await localDb.transactions.toArray();
       let max = 0;
       for (const tx of existing) {
@@ -179,7 +180,7 @@ export async function generateJobNumber(): Promise<string> {
     }
     seq += 1;
     await localDb.meta.put({ key: counterKey, value: seq, updatedAt: nowISO() } as any);
-    return `JOB-${dateKey}-${String(seq).padStart(4, '0')}`;
+    return `JEGZ-${year}-${String(seq).padStart(6, '0')}`;
   });
 }
 
@@ -190,6 +191,26 @@ export async function ensureJobNumbers(): Promise<void> {
     const jobNumber = await generateJobNumber();
     await localDb.transactions.update(tx.id, { jobNumber });
   }
+}
+
+const LOW_STOCK_DEFAULTS_FLAG = 'low_stock_defaults_v1';
+
+/**
+ * Backfill the default low-stock threshold for products that do not have their
+ * own reorderPoint. Runs once and never overwrites existing thresholds.
+ */
+export async function normalizeLowStockDefaults(): Promise<void> {
+  const flag = await localDb.meta.get(LOW_STOCK_DEFAULTS_FLAG);
+  if (flag?.value === true) return;
+
+  const products = await localDb.products.toArray();
+  for (const p of products) {
+    if (typeof p.reorderPoint !== 'number' || !Number.isFinite(p.reorderPoint) || p.reorderPoint < 0) {
+      await localDb.products.update(p.id, { reorderPoint: DEFAULT_REORDER_POINT, updatedAt: nowISO() });
+    }
+  }
+
+  await localDb.meta.put({ key: LOW_STOCK_DEFAULTS_FLAG, value: true, updatedAt: nowISO() } as any);
 }
 
 // ─── Product Services ───────────────────────────────────────────────────────
@@ -222,7 +243,7 @@ export const productService = {
 
   async getLowStock(reorderPoint?: number): Promise<Product[]> {
     const all = await localStorageSafeProducts();
-    return all.filter(p => availableStockOf(p) <= (reorderPoint ?? p.reorderPoint ?? 10));
+    return all.filter(p => availableStockOf(p) <= (reorderPoint ?? p.reorderPoint ?? DEFAULT_REORDER_POINT));
   },
 };
 
@@ -252,7 +273,61 @@ export const serviceService = {
   async delete(id: number): Promise<void> {
     await localDb.services.delete(id);
   },
+
+  /** Count historical transaction lines that reference this service. */
+  async countReferences(id: number): Promise<number> {
+    return localDb.transactionItems
+      .filter((item) => item.type === 'service' && Number(item.refId) === Number(id))
+      .count();
+  },
 };
+
+// ─── Service catalog normalization ──────────────────────────────────────────
+const SERVICE_TYPE_TO_CATEGORY: Record<string, string> = {
+  repair: 'Repair',
+  maintenance: 'Maintenance',
+  support: 'Support',
+  diagnosis: 'Diagnosis',
+  custom: 'General',
+  android: 'Android',
+  iphone: 'iPhone',
+};
+
+/** Suggested categories shown in the Services & Labor form. */
+export const SERVICE_CATEGORIES = ['Repair', 'Maintenance', 'Support', 'Diagnosis', 'General'];
+
+/** Derive a human-friendly category from a legacy service type. */
+function serviceCategoryFor(service: { type?: string; category?: string }): string {
+  const explicit = service.category && String(service.category).trim();
+  if (explicit) return explicit;
+  const type = service.type;
+  if (type) {
+    const mapped = SERVICE_TYPE_TO_CATEGORY[type];
+    if (mapped) return mapped;
+    return type.charAt(0).toUpperCase() + type.slice(1);
+  }
+  return 'General';
+}
+
+/**
+ * Idempotent migration that brings every service in the canonical table into
+ * the current catalog shape (category, active, numeric price/cost) without
+ * touching its name, type, or existing price/cost values beyond fixing types.
+ * Safe to run on every bootstrap and after backup imports.
+ */
+export async function normalizeServiceCatalog(): Promise<void> {
+  const all = await localDb.services.toArray();
+  const now = nowISO();
+  for (const service of all) {
+    const category = serviceCategoryFor(service);
+    const active = service.active !== false;
+    const cost = typeof service.cost === 'number' && Number.isFinite(service.cost) ? service.cost : 0;
+    const price = typeof service.price === 'number' && Number.isFinite(service.price) ? service.price : 0;
+    if (service.category !== category || service.active === undefined || service.cost !== cost || service.price !== price) {
+      await localDb.services.update(service.id, { category, active, cost, price, updatedAt: now });
+    }
+  }
+}
 
 // ─── Technician Services ────────────────────────────────────────────────────
 export const technicianService = {
@@ -775,6 +850,122 @@ async function toJobItemInputs(items: TransactionItem[]): Promise<JobItemInput[]
   }));
 }
 
+// ─── Customer History (derived from transaction/job records) ────────────────
+export interface CustomerSummary {
+  /** Stable derived identity, e.g. `p:9171234567` or `n:juan dela cruz`. */
+  key: string;
+  name: string;
+  /** Most recent known phone (only if recorded). */
+  phone?: string;
+  phones: string[];
+  devices: string[];
+  jobCount: number;
+  completedCount: number;
+  totalSpent: number;
+  outstanding: number;
+  firstVisit?: string;
+  lastVisit?: string;
+}
+
+/**
+ * Derive a stable customer identity from existing records. A customer is
+ * keyed by their phone number (normalized to digits) when one was recorded,
+ * otherwise by a normalized customer name. This never fabricates identity:
+ * it only groups records that already share the same contact/name fields.
+ */
+function customerKeyOf(tx: { customerName?: string; customer?: string; customerPhone?: string; unit?: string }): string {
+  const rawPhone = tx.customerPhone || (isPhoneString(tx.unit) ? tx.unit : '') || '';
+  const digits = rawPhone.replace(/\D/g, '');
+  if (digits) return `p:${digits.length > 10 ? digits.slice(-10) : digits}`;
+  const name = (tx.customerName || tx.customer || 'Walk-in').trim().toLowerCase().replace(/\s+/g, ' ');
+  return `n:${name || 'walk-in'}`;
+}
+
+export const customerService = {
+  /** Aggregated, searchable customer list derived entirely from transaction records. */
+  async list(search?: string): Promise<CustomerSummary[]> {
+    const { txs, items, techMap } = await buildLists();
+    const enriched = txs.map(tx => enrichTransaction(tx, items, techMap));
+    const term = (search || '').toLowerCase().trim();
+
+    const groups = new Map<string, EnrichedTransaction[]>();
+    for (const tx of enriched) {
+      const key = customerKeyOf(tx);
+      const arr = groups.get(key) || [];
+      arr.push(tx);
+      groups.set(key, arr);
+    }
+
+    let keys: string[];
+    if (!term) {
+      keys = [...groups.keys()];
+    } else {
+      // Match across customer name, phone, unit model, and job number.
+      const matchedKeys = new Set<string>();
+      for (const tx of enriched) {
+        const phoneDigits = (tx.customerPhone || '').replace(/\D/g, '');
+        const haystack = [
+          tx.customerName || '',
+          tx.customerPhone || '',
+          phoneDigits,
+          `${tx.phoneBrand || ''} ${tx.phoneModel || ''}`,
+          tx.jobNumber || '',
+          String(tx.id),
+        ].join(' ').toLowerCase();
+        if (haystack.includes(term)) matchedKeys.add(customerKeyOf(tx));
+      }
+      keys = [...matchedKeys];
+    }
+
+    const summaries = keys.map(key => {
+      const group = (groups.get(key) || [])
+        .slice()
+        .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+      const latest = group[0];
+      const phones = [...new Set(group.map(tx => tx.customerPhone || '').filter(Boolean))];
+      const devices = [
+        ...new Set(
+          group
+            .map(tx => [tx.phoneBrand, tx.phoneModel].filter(Boolean).join(' ').trim())
+            .filter(Boolean),
+        ),
+      ];
+      const completed = group.filter(tx => isCompletedStatus(tx.status));
+      const open = group.filter(tx => isOpenStatus(tx.status));
+      const totalSpent = round2(completed.reduce((sum, tx) => sum + (tx.total || 0), 0));
+      const outstanding = round2(
+        open.reduce((sum, tx) => sum + (tx.remainingBalance ?? Math.max(0, (tx.total || 0) - (tx.amountPaid || 0))), 0),
+      );
+      return {
+        key,
+        name: latest.customerName || 'Walk-in',
+        phone: phones[0] || latest.customerPhone || undefined,
+        phones,
+        devices,
+        jobCount: group.length,
+        completedCount: completed.length,
+        totalSpent,
+        outstanding,
+        firstVisit: group[group.length - 1]?.createdAt,
+        lastVisit: latest?.createdAt,
+      } as CustomerSummary;
+    });
+
+    return summaries.sort(
+      (a, b) => new Date(b.lastVisit || 0).getTime() - new Date(a.lastVisit || 0).getTime(),
+    );
+  },
+
+  /** Full repair history for one derived customer key (enriched job records). */
+  async history(key: string): Promise<EnrichedTransaction[]> {
+    const { txs, items, techMap } = await buildLists();
+    return txs
+      .filter(tx => customerKeyOf(tx) === key)
+      .map(tx => enrichTransaction(tx, items, techMap))
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+  },
+};
+
 export const jobService = {
   /** Save the current POS job as a pending transaction (status pending). */
   async saveAsPending(input: JobInput): Promise<{ id: number; jobNumber: string }> {
@@ -1287,7 +1478,7 @@ export const dashboardService = {
     const { balance: gcashCount } = await gcashDrawerService.get();
 
     const allProducts = await productService.list();
-    const lowStockProducts = allProducts.filter(p => availableStockOf(p) <= (p.reorderPoint ?? 10));
+    const lowStockProducts = allProducts.filter(p => availableStockOf(p) <= (p.reorderPoint ?? DEFAULT_REORDER_POINT));
     const lowStockCount = lowStockProducts.length;
 
     const openJobs = open.length;
@@ -1327,7 +1518,7 @@ export const dashboardService = {
       topServices,
       topProducts,
       recentTransactions,
-      lowStockProducts: lowStockProducts.slice(0, 5),
+      lowStockProducts,
     };
   },
 

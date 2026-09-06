@@ -13,11 +13,13 @@ import InventoryPage from "@/pages/inventory";
 import ServicesPage from "@/pages/services";
 import TechniciansPage from "@/pages/technicians";
 import TransactionsPage from "@/pages/transactions";
+import CustomersPage from "@/pages/customers";
 import DrawerPage from "@/pages/drawer";
 import ReportsPage from "@/pages/reports";
 import DefectiveItemsPage from "@/pages/defective";
 import BackjobsPage from "@/pages/backjobs";
 import UsersPage from "@/pages/users";
+import BackupPage from "@/pages/backup";
 import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
 
@@ -47,11 +49,13 @@ function AppContent() {
         <Route path="/services" component={ServicesPage} />
         <Route path="/technicians" component={TechniciansPage} />
         <Route path="/transactions" component={TransactionsPage} />
+        <Route path="/customers" component={CustomersPage} />
         <Route path="/drawer" component={DrawerPage} />
         <Route path="/reports" component={ReportsPage} />
         <Route path="/defective" component={DefectiveItemsPage} />
         <Route path="/backjobs" component={BackjobsPage} />
         <Route path="/users" component={UsersPage} />
+        <Route path="/backup" component={BackupPage} />
         <Route path="/settings" component={SettingsPage} />
         <Route component={NotFound} />
       </Switch>

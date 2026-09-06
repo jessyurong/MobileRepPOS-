@@ -17,6 +17,7 @@ import {
   type TransactionStatus,
 } from "@/lib/offline-api";
 import { formatCurrency } from "@/lib/utils";
+import { printJobSlip, printReceipt, type PrintSource } from "@/lib/printing";
 import { useShopProfile } from "@/lib/offline-api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -63,6 +64,7 @@ import {
   PackagePlus,
   PenLine,
   Tag,
+  Printer,
 } from "lucide-react";
 
 type CartItem = {
@@ -119,6 +121,7 @@ export default function PosPage() {
   const [cashReceived, setCashReceived] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [receipt, setReceipt] = useState<JobCompletionResult | null>(null);
+  const [pendingSlip, setPendingSlip] = useState<PrintSource | null>(null);
   const [editingJob, setEditingJob] = useState<EditingJob | null>(null);
   const [openingJob, setOpeningJob] = useState(false);
 
@@ -144,7 +147,11 @@ export default function PosPage() {
   const { data: rawProducts } = useGetProducts();
   const { data: rawTechnicians } = useGetTechnicians();
 
-  const services = Array.isArray(rawServices) ? rawServices : [];
+  // Only active services are selectable for new sales; inactive ones remain in
+  // historical transactions unchanged.
+  const services = Array.isArray(rawServices)
+    ? rawServices.filter((s) => s.active !== false)
+    : [];
   const products = Array.isArray(rawProducts) ? rawProducts : [];
   const technicians = Array.isArray(rawTechnicians) ? rawTechnicians : [];
 
@@ -277,7 +284,9 @@ export default function PosPage() {
         quantity: 1,
         type,
         stock: availableStock,
-        cost: Number(item.cost) > 0 ? Number(item.cost) : undefined,
+        // Services always carry a numeric cost (0 for pure labor) so profit is
+        // computed as Price - DirectCost and never falls back to the parts margin.
+        cost: type === "service" ? Number(item.cost) || 0 : Number(item.cost) > 0 ? Number(item.cost) : undefined,
         isPreOrder: asPreOrder,
         basePrice: asPreOrder ? basePrice : undefined,
         markupPercentage: asPreOrder ? preOrderMarkup : undefined,
@@ -326,6 +335,7 @@ export default function PosPage() {
     setEditingJob(null);
     setOpeningJob(false);
     setReceipt(null);
+    setPendingSlip(null);
   };
 
   /*
@@ -458,6 +468,30 @@ export default function PosPage() {
   /*
    * SAVE AS PENDING / SAVE CHANGES
    */
+  const buildSlipSource = (job: { id: number; jobNumber: string }): PrintSource => ({
+    jobNumber: job.jobNumber,
+    status: editingJob?.status || "pending",
+    customerName: customerName.trim() || "Walk-in",
+    customerPhone: customerPhone.trim() || undefined,
+    phoneBrand: phoneBrand.trim() || undefined,
+    phoneModel: phoneModel.trim() || undefined,
+    technicianName: technician ? technicians.find((t) => String(t.id) === technician)?.name : undefined,
+    createdAt: new Date().toISOString(),
+    items: cart.map((item) => ({
+      type: item.type,
+      name: item.name,
+      quantity: item.quantity,
+      price: item.price,
+      isPreOrder: item.isPreOrder,
+      isCustom: item.isCustom,
+    })),
+    total: subtotal,
+    amountPaid: editingJob ? Math.max(alreadyPaid, totalDeposit) : totalDeposit,
+    remainingBalance: Math.max(0, round2(subtotal - (editingJob ? Math.max(alreadyPaid, totalDeposit) : totalDeposit))),
+    paymentMethod,
+    hasPreOrder,
+  });
+
   const handleSavePending = async () => {
     if (cart.length === 0) return;
     if (!phoneModel.trim()) {
@@ -494,9 +528,10 @@ export default function PosPage() {
           description: `${result.jobNumber} was created. You can finish it later in Transactions.`,
         });
       }
+      setPendingSlip(buildSlipSource(result));
       setCheckoutOpen(false);
-      clearCart();
-      setLocation("/transactions");
+      setEditingJob(null);
+      setOpeningJob(false);
     } catch (error) {
       toast({
         title: "Could not save pending job",
@@ -1033,6 +1068,9 @@ export default function PosPage() {
                       {[shopProfile.address, shopProfile.contactNumber].filter(Boolean).join(" · ")}
                     </p>
                   )}
+                  {shopProfile.email && (
+                    <p className="truncate text-xs text-muted-foreground">{shopProfile.email}</p>
+                  )}
                 </div>
               </div>
               <div className="rounded-lg border border-primary/30 bg-primary/5 p-4 text-center">
@@ -1042,6 +1080,12 @@ export default function PosPage() {
                   {receipt.customerName}
                   {receipt.customerPhone ? ` · ${receipt.customerPhone}` : ""}
                   {receipt.phoneModel ? ` · ${receipt.phoneModel}` : ""}
+                </p>
+                {receipt.technicianName && (
+                  <p className="mt-1 text-xs text-muted-foreground">Technician: {receipt.technicianName}</p>
+                )}
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {new Date(receipt.createdAt).toLocaleString("en-PH")}
                 </p>
                 <div className="mt-2 flex justify-center gap-2">
                   {statusBadge(receipt.status)}
@@ -1055,7 +1099,7 @@ export default function PosPage() {
                 {receipt.items.map((item, index) => (
                   <div key={`${item.id}-${index}`} className="flex justify-between gap-2">
                     <span className="truncate">
-                      {item.quantity} × {item.name}
+                      {item.quantity} × {item.name} @ {formatCurrency(item.price || 0)}
                       {item.isPreOrder ? " (pre-order)" : ""}
                     </span>
                     <span className="shrink-0 font-medium">{formatCurrency((item.price || 0) * (item.quantity || 1))}</span>
@@ -1065,6 +1109,8 @@ export default function PosPage() {
 
               <Separator />
               <div className="space-y-1 text-sm">
+                <div className="flex justify-between"><span>Subtotal</span><span className="font-medium">{formatCurrency(receipt.items.reduce((sum, it) => sum + (it.price || 0) * (it.quantity || 1), 0))}</span></div>
+                <div className="flex justify-between"><span>Discount</span><span>{formatCurrency(0)}</span></div>
                 <div className="flex justify-between"><span>Total</span><span className="font-medium">{formatCurrency(receipt.total)}</span></div>
                 <div className="flex justify-between"><span>Amount paid</span><span className="font-medium">{formatCurrency(receipt.amountPaid)}</span></div>
                 {typeof receipt.cashReceived === "number" && (
@@ -1078,11 +1124,48 @@ export default function PosPage() {
                 )}
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <Button variant="outline" onClick={() => { setReceipt(null); clearCart(); }}>
-                  New sale
+              <div className="flex flex-col gap-3">
+                <Button type="button" variant="outline" onClick={() => printReceipt(shopProfile, settings, receipt)}>
+                  <Printer className="mr-2 h-4 w-4" /> Print Receipt
                 </Button>
-                <Button onClick={() => { setReceipt(null); setLocation("/"); }}>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant="outline" onClick={() => { setReceipt(null); clearCart(); }}>
+                    New sale
+                  </Button>
+                  <Button onClick={() => { setReceipt(null); setLocation("/"); }}>
+                    Done
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* JOB SLIP DIALOG (pending job saved) */}
+      <Dialog open={Boolean(pendingSlip)} onOpenChange={(open) => { if (!open) { setPendingSlip(null); clearCart(); setLocation("/transactions"); } }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Job saved</DialogTitle>
+            <DialogDescription>Print a job slip to hand to the customer, or continue.</DialogDescription>
+          </DialogHeader>
+          {pendingSlip && (
+            <div className="space-y-4">
+              <div className="rounded-lg border bg-muted/40 p-4 text-center">
+                <p className="text-xs text-muted-foreground">Job number</p>
+                <p className="font-mono text-xl font-bold text-primary">{pendingSlip.jobNumber}</p>
+                <p className="mt-1 text-sm">
+                  {pendingSlip.customerName}
+                  {pendingSlip.customerPhone ? ` · ${pendingSlip.customerPhone}` : ""}
+                  {pendingSlip.phoneModel ? ` · ${pendingSlip.phoneModel}` : ""}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">Status: PENDING</p>
+              </div>
+              <div className="flex flex-col gap-2">
+                <Button type="button" onClick={() => printJobSlip(shopProfile, settings, pendingSlip)}>
+                  <Printer className="mr-2 h-4 w-4" /> Print Job Slip
+                </Button>
+                <Button type="button" variant="outline" onClick={() => { setPendingSlip(null); clearCart(); setLocation("/transactions"); }}>
                   Done
                 </Button>
               </div>

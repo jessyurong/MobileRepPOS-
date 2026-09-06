@@ -14,6 +14,7 @@ import {
   technicianService,
   transactionService,
   transactionItemService,
+  customerService,
   defectiveItemService,
   backjobService,
   cashDrawerService,
@@ -22,6 +23,8 @@ import {
   dashboardService,
   jobService,
   ensureJobNumbers,
+  normalizeLowStockDefaults,
+  normalizeServiceCatalog,
   isCompletedStatus,
   isOpenStatus,
   type EnrichedTransaction,
@@ -40,8 +43,10 @@ import {
   type TransactionStats,
   type MonthlyReport,
   type TechnicianReportRow,
+  type CustomerSummary,
 } from './offline-data-services';
 import { shopProfileFromSettings, type ShopProfile } from './shop-profile';
+import { getLastBackupTime } from './backup-restore';
 
 // ─── Shared invalidation keys ───────────────────────────────────────────────
 function useInvalidateBusinessData() {
@@ -255,6 +260,35 @@ export function useGetTransactionItems(id: number | undefined): UseQueryResult<T
     queryKey: ['transactionItems', id],
     queryFn: () => (id ? transactionItemService.getByTransactionId(id) : []),
     enabled: !!id,
+    staleTime: Infinity,
+  });
+}
+
+// Customer History Hooks
+export function useListCustomers(params?: { search?: string }): UseQueryResult<CustomerSummary[], unknown> {
+  return useQuery({
+    queryKey: ['customers', params?.search || ''],
+    queryFn: () => customerService.list(params?.search),
+    staleTime: Infinity,
+  });
+}
+
+export function useGetCustomerHistory(customerKey: string | null): UseQueryResult<EnrichedTransaction[], unknown> {
+  return useQuery({
+    queryKey: ['customerHistory', customerKey],
+    queryFn: () => (customerKey ? customerService.history(customerKey) : Promise.resolve([] as EnrichedTransaction[])),
+    enabled: !!customerKey,
+    staleTime: Infinity,
+  });
+}
+
+// Backup / Restore Hooks
+export const LAST_BACKUP_QUERY_KEY = ['lastBackupTime'];
+
+export function useGetLastBackupTime(): UseQueryResult<string | null, unknown> {
+  return useQuery({
+    queryKey: LAST_BACKUP_QUERY_KEY,
+    queryFn: () => getLastBackupTime(),
     staleTime: Infinity,
   });
 }
@@ -698,6 +732,8 @@ export function useBootstrapMigration() {
     (async () => {
       try {
         await ensureJobNumbers();
+        await normalizeLowStockDefaults();
+        await normalizeServiceCatalog();
       } catch (e) {
         console.error('Migration bootstrap failed:', e);
       } finally {

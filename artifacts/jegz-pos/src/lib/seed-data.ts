@@ -10,6 +10,8 @@ import {
   technicianService,
   settingsService,
   ensureJobNumbers,
+  normalizeLowStockDefaults,
+  normalizeServiceCatalog,
 } from './offline-data-services';
 
 const SEED_FLAG = 'db_seeded_v1';
@@ -210,6 +212,21 @@ export async function seedDatabaseIfNeeded() {
     await ensureJobNumbers();
   } catch (error) {
     console.error('Error backfilling job numbers:', error);
+  }
+
+  // Backfill the default low-stock threshold for products without one (idempotent).
+  try {
+    await normalizeLowStockDefaults();
+  } catch (error) {
+    console.error('Error backfilling low-stock defaults:', error);
+  }
+
+  // Normalize the service catalog (category/active/cost) for any pre-existing
+  // or legacy services so POS and Services & Labor always agree (idempotent).
+  try {
+    await normalizeServiceCatalog();
+  } catch (error) {
+    console.error('Error normalizing service catalog:', error);
   }
 }
 

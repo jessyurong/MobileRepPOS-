@@ -28,6 +28,10 @@ export {
   useGetTransaction,
   useGetTransactionRaw,
   useGetTransactionItems,
+  useListCustomers,
+  useGetCustomerHistory,
+  useGetLastBackupTime,
+  LAST_BACKUP_QUERY_KEY,
   useCreateTransaction,
   useUpdateTransaction,
   useUpdateTransactionStatus,
@@ -93,6 +97,9 @@ export {
   downloadBackup,
   getBackupSummary,
   validateBackup,
+  getLastBackupTime,
+  markLastBackup,
+  LAST_BACKUP_KEY,
   type PosBackup,
 } from './backup-restore';
 
@@ -103,6 +110,7 @@ export {
   technicianService,
   transactionService,
   transactionItemService,
+  customerService,
   defectiveItemService,
   backjobService,
   cashDrawerService,
@@ -112,6 +120,10 @@ export {
   jobService,
   generateJobNumber,
   ensureJobNumbers,
+  normalizeLowStockDefaults,
+  normalizeServiceCatalog,
+  SERVICE_CATEGORIES,
+  DEFAULT_REORDER_POINT,
   normalizeStatus,
   isCompletedStatus,
   isOpenStatus,
@@ -140,6 +152,7 @@ export {
   type MonthlyReport,
   type TechnicianReportRow,
   type TransactionListOptions,
+  type CustomerSummary,
 } from './offline-data-services';
 
 // Type aliases for compatibility

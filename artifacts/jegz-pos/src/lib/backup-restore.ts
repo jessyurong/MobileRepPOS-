@@ -13,9 +13,37 @@
  */
 
 import { localDb, LOCAL_TABLES } from './local-db';
-import { normalizeStatus, paymentStatusFor, ensureJobNumbers } from './offline-data-services';
+import { normalizeStatus, paymentStatusFor, ensureJobNumbers, normalizeServiceCatalog } from './offline-data-services';
 
 export const BACKUP_VERSION = '2.1.0';
+
+/** meta table key that stores the ISO timestamp of the last successful backup. */
+export const LAST_BACKUP_KEY = 'lastBackupTime';
+
+/**
+ * Read the timestamp of the last successful backup (if any).
+ * Stored only locally in the existing meta table — this is not a cloud backup.
+ */
+export async function getLastBackupTime(): Promise<string | null> {
+  try {
+    const row = await localDb.meta.get(LAST_BACKUP_KEY);
+    const value = row?.value;
+    return typeof value === 'string' && value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record the timestamp of a successful local backup. */
+export async function markLastBackup(time?: string): Promise<void> {
+  const at = time || new Date().toISOString();
+  await localDb.meta.put({
+    key: LAST_BACKUP_KEY,
+    value: at,
+    createdAt: new Date().toISOString(),
+    updatedAt: at,
+  } as any);
+}
 
 export interface PosBackup {
   version: string;
@@ -76,6 +104,8 @@ export async function exportBackup(): Promise<Blob> {
 export async function downloadBackup(): Promise<void> {
   try {
     const backup = await exportBackup();
+    // Only record a timestamp once the backup data was generated successfully.
+    await markLastBackup();
     const url = URL.createObjectURL(backup);
     const link = document.createElement('a');
     link.href = url;
@@ -247,6 +277,9 @@ export async function importBackup(
 
     // Ensure every transaction has a unique job number (backfills safe values).
     await ensureJobNumbers();
+
+    // Ensure service catalog rows match the current shape (category/active/cost).
+    await normalizeServiceCatalog();
 
     // Ensure the pre-order markup default exists.
     const existingMarkup = await localDb.settings.where('key').equals('preOrderMarkup').first();

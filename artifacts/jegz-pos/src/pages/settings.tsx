@@ -4,7 +4,6 @@ import {
   ArrowRight,
   Banknote,
   Check,
-  Download,
   ImagePlus,
   KeyRound,
   LockKeyhole,
@@ -14,7 +13,6 @@ import {
   ShieldCheck,
   Store,
   Trash2,
-  Upload,
   UsersRound,
   WalletCards,
 } from "lucide-react";
@@ -22,13 +20,10 @@ import {
   useChangePassword,
   useGetSettings,
   useUpdateSettings,
-  downloadBackup,
-  importBackup,
   fileToResizedLogoDataUrl,
   LOGO_ACCEPT_ATTR,
   type Settings,
   type SettingsInput,
-  type PosBackup,
 } from "@/lib/offline-api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -75,7 +70,6 @@ export default function SettingsPage() {
     newPassword: "",
     confirmPassword: "",
   });
-  const [isRestoring, setIsRestoring] = useState(false);
   const [logoUploading, setLogoUploading] = useState(false);
 
   useEffect(() => {
@@ -175,46 +169,6 @@ export default function SettingsPage() {
       toast({ title: "Password changed", description: "Use your new password the next time you sign in." });
     } catch (error) {
       toast({ title: errorMessage(error, "Failed to change password"), variant: "destructive" });
-    }
-  };
-
-  const handleDownloadBackup = async () => {
-    try {
-      await downloadBackup();
-      toast({ title: "Backup downloaded", description: "Your POS data has been downloaded." });
-    } catch (error) {
-      toast({ title: "Failed to download backup", variant: "destructive" });
-    }
-  };
-
-  const handleRestoreBackup = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setIsRestoring(true);
-    try {
-      const text = await file.text();
-      const backup = JSON.parse(text) as PosBackup;
-      const result = await importBackup(backup, false);
-
-      if (result.success) {
-        toast({
-          title: "Backup restored",
-          description: `Successfully imported ${result.itemsImported} items.`,
-        });
-        // Reload page to refresh all data
-        window.location.reload();
-      } else {
-        toast({ title: result.message, variant: "destructive" });
-      }
-    } catch (error) {
-      toast({
-        title: "Failed to restore backup",
-        description: error instanceof Error ? error.message : "Invalid backup file",
-        variant: "destructive",
-      });
-    } finally {
-      setIsRestoring(false);
     }
   };
 
@@ -506,40 +460,16 @@ export default function SettingsPage() {
       <Card>
         <CardHeader className="border-b">
           <CardTitle className="flex items-center gap-2 text-base">
-            <Download className="h-4 w-4 text-primary" />
-            Backup & restore
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            Backups
           </CardTitle>
-          <CardDescription>Export your POS data or restore from a backup file.</CardDescription>
+          <CardDescription>Backups were moved to a dedicated page.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4 p-5">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Button onClick={handleDownloadBackup} variant="outline" className="gap-2">
-              <Download className="h-4 w-4" />
-              Download backup
-            </Button>
-            <div>
-              <input
-                type="file"
-                accept=".json"
-                onChange={handleRestoreBackup}
-                disabled={isRestoring}
-                style={{ display: "none" }}
-                id="restore-backup-input"
-              />
-              <Button
-                onClick={() => document.getElementById("restore-backup-input")?.click()}
-                variant="outline"
-                disabled={isRestoring}
-                className="w-full gap-2"
-              >
-                <Upload className="h-4 w-4" />
-                {isRestoring ? "Restoring..." : "Restore backup"}
-              </Button>
-            </div>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            Backups include all products, services, technicians, transactions, inventory data, and shop settings — including your shop profile and logo.
-          </p>
+        <CardContent className="p-5">
+          <Link href="/backup" className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+            Manage backups
+            <ArrowRight className="h-4 w-4" />
+          </Link>
         </CardContent>
       </Card>
     </div>

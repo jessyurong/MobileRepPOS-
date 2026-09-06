@@ -19,6 +19,8 @@ import {
   LogOut,
   Shield,
   BarChart2,
+  Contact,
+  DatabaseBackup,
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -41,11 +43,13 @@ const navItems: NavItem[] = [
   { href: "/services",     label: "Labor Services", icon: Wrench,          permission: "services" },
   { href: "/technicians",  label: "Technicians",    icon: Users,           permission: "technicians" },
   { href: "/transactions", label: "Transactions",   icon: Receipt,         permission: "transactions" },
+  { href: "/customers",   label: "Customers",       icon: Contact,         permission: "transactions" },
   { href: "/drawer",       label: "Drawer",         icon: Wallet,          permission: "cash_drawer" },
   { href: "/reports",      label: "Reports",        icon: BarChart2,       permission: "transactions" },
   { href: "/defective",    label: "Defective Items",icon: AlertTriangle,   permission: "defective_items" },
   { href: "/backjobs",     label: "Backjobs",       icon: RotateCcw,       permission: "backjobs" },
   { href: "/users",        label: "User Management",icon: UserCog,         adminOnly: true },
+  { href: "/backup",       label: "Backup & Restore",icon: DatabaseBackup,  adminOnly: true },
   { href: "/settings",     label: "Settings",        icon: Settings },
 ];
 

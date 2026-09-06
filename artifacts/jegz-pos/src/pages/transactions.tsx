@@ -14,6 +14,8 @@ import {
 } from "@/lib/offline-api";
 import { useQueryClient } from "@tanstack/react-query";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { printJobSlip, printReceipt, type PrintSource } from "@/lib/printing";
+import { useShopProfile, useGetSettings } from "@/lib/offline-api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -41,6 +43,7 @@ import {
   HandCoins,
   XCircle,
   User2,
+  Printer,
 } from "lucide-react";
 
 type Period = "today" | "week" | "month" | "all";
@@ -76,6 +79,8 @@ export default function TransactionsPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [, setLocation] = useLocation();
+  const shopProfile = useShopProfile();
+  const { data: settings } = useGetSettings();
 
   const [period, setPeriod] = useState<Period>("today");
   const [search, setSearch] = useState("");
@@ -230,11 +235,43 @@ export default function TransactionsPage() {
       },
     );
   };
+const displayData = filtered || [];
 
-  const displayData = filtered || [];
   const changeAmount = completeTx && completePayMethod === "cash"
     ? Math.max(0, completeCashReceived - Math.max(0, (completeTx.total || 0) - (completeTx.amountPaid || 0)))
     : 0;
+
+  const txToPrintSource = (tx: EnrichedTransaction): PrintSource => ({
+    jobNumber: tx.jobNumber,
+    status: tx.status,
+    customerName: tx.customerName,
+    customerPhone: tx.customerPhone,
+    phoneBrand: tx.phoneBrand,
+    phoneModel: tx.phoneModel,
+    technicianName: tx.technicianName,
+    createdAt: tx.createdAt,
+    completedAt: tx.completedAt,
+    items: (tx.items || []).map((i) => ({
+      type: i.type,
+      name: i.name,
+      quantity: i.quantity,
+      price: i.price,
+      isPreOrder: i.isPreOrder,
+      isCustom: i.isCustom,
+    })),
+    total: tx.total,
+    amountPaid: tx.amountPaid,
+    remainingBalance: tx.remainingBalance,
+    paymentMethod: tx.paymentMethod,
+    paymentStatus: tx.paymentStatus,
+    hasPreOrder: tx.hasPreOrder,
+  });
+
+  const handlePrint = (tx: EnrichedTransaction) => {
+    const source = txToPrintSource(tx);
+    if (isCompletedTxn(tx)) printReceipt(shopProfile, settings, source);
+    else printJobSlip(shopProfile, settings, source);
+  };
 
   return (
     <div className="space-y-4 flex flex-col h-[calc(100vh-2rem)]">
@@ -409,6 +446,16 @@ export default function TransactionsPage() {
                                   <XCircle className="h-4 w-4" />
                                 </Button>
                               </>
+                            )}
+                            {isOpenTxn(tx) && (
+                              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handlePrint(tx)}>
+                                <Printer className="h-3 w-3 mr-1" /> Slip
+                              </Button>
+                            )}
+                            {isCompletedTxn(tx) && (
+                              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => handlePrint(tx)}>
+                                <Printer className="h-3 w-3 mr-1" /> Receipt
+                              </Button>
                             )}
                             <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => setDetailsTx(tx)}>
                               <Eye className="h-4 w-4" />
@@ -694,6 +741,14 @@ export default function TransactionsPage() {
                   </div>
                 </>
               )}
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button type="button" variant="outline" onClick={() => handlePrint(detailsTx)}>
+                  <Printer className="mr-2 h-4 w-4" />
+                  {isCompletedTxn(detailsTx) ? "Print Receipt" : "Print Job Slip"}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => setDetailsTx(null)}>Close</Button>
+              </div>
             </div>
           )}
         </DialogContent>
