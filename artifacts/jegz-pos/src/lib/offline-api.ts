@@ -94,6 +94,7 @@ export {
 export {
   exportBackup,
   importBackup,
+  previewRestore,
   downloadBackup,
   getBackupSummary,
   validateBackup,
@@ -101,6 +102,10 @@ export {
   markLastBackup,
   LAST_BACKUP_KEY,
   type PosBackup,
+  type RestoreMode,
+  type RestoreResult,
+  type RestorePreview,
+  type TablePreview,
 } from './backup-restore';
 
 // Also export data services for direct use
