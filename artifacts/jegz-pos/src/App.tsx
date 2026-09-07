@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppLayout } from "@/components/layout";
 import { ThemeProvider } from "@/lib/theme-context";
 import { AuthProvider, useAuth } from "@/lib/auth-context";
+import { StorageFolderProvider } from "@/lib/storage-folder-context";
 import LoginPage from "@/pages/login";
 
 import Dashboard from "@/pages/dashboard";
@@ -69,9 +70,11 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-            <AuthProvider>
-              <AppContent />
-            </AuthProvider>
+            <StorageFolderProvider>
+              <AuthProvider>
+                <AppContent />
+              </AuthProvider>
+            </StorageFolderProvider>
           </WouterRouter>
           <Toaster />
         </TooltipProvider>

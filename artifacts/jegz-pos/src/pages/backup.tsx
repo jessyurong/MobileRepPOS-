@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  downloadBackup,
+  backupNow,
   importBackup,
   previewRestore,
   validateBackup,
@@ -13,6 +13,7 @@ import {
   type RestorePreview,
   type TablePreview,
 } from "@/lib/offline-api";
+import { useStorageFolder } from "@/lib/storage-folder-context";
 import { formatDate, cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,7 @@ import type { RestoreResult as MigrationResult } from "@/lib/backup-restore";
 import {
   DatabaseBackup,
   Download,
+  FolderOpen,
   Upload,
   AlertTriangle,
   ShieldCheck,
@@ -320,6 +322,7 @@ export default function BackupPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const storage = useStorageFolder();
 
   const { data: lastBackup } = useGetLastBackupTime();
 
@@ -349,12 +352,18 @@ export default function BackupPage() {
   const handleDownloadBackup = async () => {
     setBackingUp(true);
     try {
-      await downloadBackup();
-      toast({ title: "Backup downloaded", description: "Your POS data backup was created on this device." });
+      const result = await backupNow();
+      toast({
+        title: result.method === "folder" ? "Backup saved to folder" : "Backup downloaded",
+        description:
+          result.method === "folder"
+            ? `Saved to ${result.folderName}/Backups/${result.fileName}`
+            : "Your POS data backup was created on this device.",
+      });
       queryClient.invalidateQueries({ queryKey: LAST_BACKUP_QUERY_KEY });
     } catch (error) {
       toast({
-        title: "Failed to download backup",
+        title: "Failed to create backup",
         description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
@@ -544,9 +553,35 @@ export default function BackupPage() {
                 )}
               </p>
             </div>
+
+            <div className="rounded-lg border bg-muted/30 p-3 text-xs">
+              {!storage.supported ? (
+                <p className="text-muted-foreground">
+                  Folder saving isn't supported in this browser — backups download as files instead.
+                </p>
+              ) : storage.folder && storage.folder.permission === "granted" ? (
+                <p className="flex items-center gap-1.5 text-muted-foreground">
+                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  Backups will be saved to <strong>{storage.folder.name}/Backups/</strong>.
+                </p>
+              ) : storage.folder ? (
+                <p className="flex items-center gap-1.5 text-amber-600">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  {storage.folder.name} is linked but access is{" "}
+                  {storage.folder.permission === "denied" ? "denied" : "not yet approved"} — backups will download until
+                  access is allowed in Settings.
+                </p>
+              ) : (
+                <p className="flex items-center gap-1.5 text-muted-foreground">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  No storage folder connected — backups download as files. Connect one in Settings.
+                </p>
+              )}
+            </div>
+
             <Button size="lg" className="w-full gap-2" onClick={handleDownloadBackup} disabled={backingUp}>
               <Download className="h-4 w-4" />
-              {backingUp ? "Generating backup..." : "Download Backup"}
+              {backingUp ? "Generating backup..." : "Backup Now"}
             </Button>
             <p className="text-xs text-muted-foreground">
               Backups include all products, services, technicians, transactions, jobs, inventory, drawer records, users,

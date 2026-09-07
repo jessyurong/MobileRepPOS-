@@ -96,6 +96,7 @@ export {
   importBackup,
   previewRestore,
   downloadBackup,
+  backupNow,
   getBackupSummary,
   validateBackup,
   getLastBackupTime,
@@ -106,7 +107,26 @@ export {
   type RestoreResult,
   type RestorePreview,
   type TablePreview,
+  type BackupSaveMethod,
+  type BackupSaveResult,
 } from './backup-restore';
+
+// Export storage folder (File System Access API) helpers
+export {
+  isStorageFolderSupported,
+  chooseStorageFolder,
+  getStoredFolderInfo,
+  disconnectStorageFolder,
+  writeFileToStorageFolder,
+  queryStorageFolderPermission,
+  requestStorageFolderPermission,
+  STORAGE_FOLDER_HANDLE_KEY,
+  STORAGE_FOLDER_SUBFOLDERS,
+  type StorageFolderInfo,
+  type StorageFolderPermission,
+  type StorageFolderWriteResult,
+  type StorageSubfolder,
+} from './storage-folder';
 
 // Also export data services for direct use
 export {

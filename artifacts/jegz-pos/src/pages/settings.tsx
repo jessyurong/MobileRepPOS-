@@ -2,17 +2,22 @@ import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import {
   ArrowRight,
+  AlertTriangle,
   Banknote,
   Check,
+  FolderOpen,
+  FolderTree,
   ImagePlus,
   KeyRound,
   LockKeyhole,
   ReceiptText,
+  RefreshCw,
   Save,
   Settings as SettingsIcon,
   ShieldCheck,
   Store,
   Trash2,
+  Unlink,
   UsersRound,
   WalletCards,
 } from "lucide-react";
@@ -24,7 +29,9 @@ import {
   LOGO_ACCEPT_ATTR,
   type Settings,
   type SettingsInput,
+  type StorageFolderPermission,
 } from "@/lib/offline-api";
+import { useStorageFolder } from "@/lib/storage-folder-context";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,8 +39,10 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/lib/auth-context";
+import { cn } from "@/lib/utils";
 
 const EMPTY_SETTINGS: SettingsInput = {
   storeName: "",
@@ -472,7 +481,196 @@ export default function SettingsPage() {
           </Link>
         </CardContent>
       </Card>
+
+      <StorageFolderSection />
     </div>
+  );
+}
+
+function PermissionBadge({ permission }: { permission: StorageFolderPermission }) {
+  const styles: Record<StorageFolderPermission, { label: string; cls: string }> = {
+    granted: {
+      label: "Read/Write access granted",
+      cls: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700",
+    },
+    prompt: {
+      label: "Access needs approval",
+      cls: "border-amber-500/40 bg-amber-500/10 text-amber-700",
+    },
+    denied: {
+      label: "Access denied",
+      cls: "border-red-500/40 bg-red-500/10 text-red-700",
+    },
+  };
+  const item = styles[permission];
+  return (
+    <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium", item.cls)}>
+      {item.label}
+    </span>
+  );
+}
+
+function StorageFolderSection() {
+  const { toast } = useToast();
+  const {
+    supported,
+    loading,
+    choosing,
+    folder,
+    error,
+    chooseFolder,
+    disconnect,
+    grantPermission,
+  } = useStorageFolder();
+
+  const handleChoose = async () => {
+    try {
+      const info = await chooseFolder();
+      if (info) {
+        toast({
+          title: "Storage folder connected",
+          description:
+            info.permission === "granted"
+              ? `${info.name} is linked. Backups will be saved to Backups/ whenever you use Backup Now.`
+              : `${info.name} is linked, but access still needs your approval.`,
+        });
+      }
+    } catch (err) {
+      toast({
+        title: "Could not connect storage folder",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDisconnect = async () => {
+    try {
+      await disconnect();
+      toast({
+        title: "Storage folder disconnected",
+        description: "Files already saved in the folder were left untouched.",
+      });
+    } catch (err) {
+      toast({
+        title: "Could not disconnect storage folder",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleGrant = async () => {
+    const permission = await grantPermission();
+    if (permission === "granted") {
+      toast({ title: "Access granted", description: "Backups can now be saved into your storage folder." });
+    } else {
+      toast({
+        title: "Access was not granted",
+        description: "Backups will continue downloading as files instead.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="border-b">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <FolderTree className="h-4 w-4 text-primary" />
+          Storage Folder
+        </CardTitle>
+        <CardDescription>
+          Connect a dedicated local folder so backups (and future receipts, job slips, reports, and exports) are saved
+          there automatically. Everything stays on this device — no cloud, no servers.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4 p-5">
+        {error && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Storage folder error</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {!supported ? (
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Not supported in this browser</AlertTitle>
+            <AlertDescription>
+              Your browser doesn't support the File System Access API, so backups will keep downloading as files.
+              Use the latest version of Chrome or Edge to connect a folder.
+            </AlertDescription>
+          </Alert>
+        ) : loading ? (
+          <p className="text-sm text-muted-foreground">Checking folder status…</p>
+        ) : folder ? (
+          <>
+            <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border bg-muted/30 p-4">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="rounded-lg bg-primary/10 p-2 text-primary">
+                  <FolderOpen className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="font-medium">Connected folder</p>
+                  <p className="truncate text-sm text-muted-foreground">{folder.name}</p>
+                </div>
+              </div>
+              <PermissionBadge permission={folder.permission} />
+            </div>
+
+            {folder.permission !== "granted" && (
+              <Alert variant="destructive">
+                <AlertTriangle className="h-4 w-4" />
+                <AlertTitle>
+                  {folder.permission === "denied" ? "Storage folder access is blocked" : "Storage folder access needs approval"}
+                </AlertTitle>
+                <AlertDescription>
+                  {folder.permission === "denied"
+                    ? "The browser is not allowing writes to this folder. Allow access again or disconnect it."
+                    : "Allow read/write access so Backup Now can save files into this folder."}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            <div className="flex flex-wrap items-center gap-2">
+              {folder.permission !== "granted" && (
+                <Button variant="outline" size="sm" onClick={handleGrant} className="gap-2">
+                  <RefreshCw className="h-4 w-4" /> Allow access
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={handleChoose} disabled={choosing} className="gap-2">
+                <FolderTree className="h-4 w-4" /> Change folder
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleDisconnect} className="gap-2 text-destructive hover:text-destructive">
+                <Unlink className="h-4 w-4" /> Disconnect
+              </Button>
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              Backup files are written only inside your chosen folder, under Backups/. Only a small folder reference is
+              stored on this device so the connection survives a reload — POS data stays in IndexedDB and is never
+              written into it.
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
+              No storage folder connected yet — backups are downloaded as files from your browser.
+            </div>
+            <Button onClick={handleChoose} disabled={choosing} className="gap-2">
+              <FolderOpen className="h-4 w-4" />
+              {choosing ? "Choosing folder…" : "Choose Folder"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Pick a dedicated JEGZ POS folder. JEGZ POS will create Backups, Receipts, Job Slips, Reports, and Exports
+              inside it.
+            </p>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

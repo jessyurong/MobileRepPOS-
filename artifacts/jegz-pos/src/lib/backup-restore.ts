@@ -22,6 +22,7 @@
 
 import { localDb, LOCAL_TABLES } from './local-db';
 import { normalizeStatus, paymentStatusFor, ensureJobNumbers, normalizeServiceCatalog } from './offline-data-services';
+import { writeFileToStorageFolder } from './storage-folder';
 
 export const BACKUP_VERSION = '2.1.0';
 
@@ -188,8 +189,49 @@ function backupFileName(date: Date): string {
   return `jegz-pos-backup-${date.toISOString().slice(0, 10)}.json`;
 }
 
+/** Where the most recent backup ended up. */
+export type BackupSaveMethod = 'folder' | 'download';
+
+/** Result of a "Backup Now" run. */
+export interface BackupSaveResult {
+  method: BackupSaveMethod;
+  fileName: string;
+  /** Set when the backup was saved into a connected storage folder. */
+  folderName?: string;
+}
+
 /**
- * Download backup file to user's device
+ * Create a backup and save it to the connected POS storage folder when one is
+ * connected with read-write permission. Otherwise it gracefully falls back to
+ * the normal browser download flow. The backup format is identical either way.
+ *
+ * Writes are only ever made inside the folder the user picked. When the folder
+ * is connected but the write itself fails, the error is thrown instead of being
+ * silently ignored.
+ */
+export async function backupNow(options?: { preferStorageFolder?: boolean }): Promise<BackupSaveResult> {
+  const preferStorageFolder = options?.preferStorageFolder !== false;
+  const backup = await exportBackup();
+  const fileName = backupFileName(new Date());
+
+  if (preferStorageFolder) {
+    const saved = await writeFileToStorageFolder(fileName, backup, 'Backups');
+    if (saved) {
+      // Only record a timestamp once the backup data was generated successfully.
+      await markLastBackup();
+      return { method: 'folder', fileName, folderName: saved.folderName };
+    }
+  }
+
+  // No connected folder (or permission not granted) → normal browser download.
+  await markLastBackup();
+  triggerFileDownload(backup, fileName);
+  return { method: 'download', fileName };
+}
+
+/**
+ * Force a backup that always downloads as a file (never touches the storage
+ * folder). Retained for callers that explicitly want the original behavior.
  */
 export async function downloadBackup(): Promise<void> {
   try {

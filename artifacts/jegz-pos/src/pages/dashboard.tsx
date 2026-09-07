@@ -4,7 +4,7 @@ import {
   useGetDashboard,
   useShopProfile,
   useGetLastBackupTime,
-  downloadBackup,
+  backupNow,
   LAST_BACKUP_QUERY_KEY,
   DEFAULT_REORDER_POINT,
 } from "@/lib/offline-api";
@@ -112,12 +112,18 @@ export default function Dashboard() {
   const handleBackupNow = async () => {
     setBackingUp(true);
     try {
-      await downloadBackup();
-      toast({ title: "Backup downloaded", description: "Your POS data backup was created on this device." });
+      const result = await backupNow();
+      toast({
+        title: result.method === "folder" ? "Backup saved to folder" : "Backup downloaded",
+        description:
+          result.method === "folder"
+            ? `Saved to ${result.folderName}/Backups/${result.fileName}`
+            : "Your POS data backup was created on this device.",
+      });
       queryClient.invalidateQueries({ queryKey: LAST_BACKUP_QUERY_KEY });
     } catch (error) {
       toast({
-        title: "Failed to download backup",
+        title: "Failed to create backup",
         description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       });
