@@ -23,6 +23,8 @@ import {
   dashboardService,
   jobService,
   ensureJobNumbers,
+  getCustomerNameSuggestions,
+  getPhoneModelSuggestions,
   normalizeLowStockDefaults,
   normalizeServiceCatalog,
   isCompletedStatus,
@@ -61,16 +63,20 @@ function useInvalidateBusinessData() {
     queryClient.invalidateQueries({ queryKey: ['technicians'] });
     queryClient.invalidateQueries({ queryKey: ['monthlyReport'] });
     queryClient.invalidateQueries({ queryKey: ['technicianReport'] });
+    queryClient.invalidateQueries({ queryKey: ['customerNameSuggestions'] });
+    queryClient.invalidateQueries({ queryKey: ['phoneModelSuggestions'] });
   }, [queryClient]);
 }
 
 // Product Hooks
 export function useListProducts(
-  _params?: any,
+  params?: { search?: string; deviceType?: string },
 ): UseQueryResult<Product[], unknown> {
+  const search = params?.search || '';
+  const deviceType = params?.deviceType || 'all';
   return useQuery({
-    queryKey: ['products'],
-    queryFn: () => productService.list(),
+    queryKey: ['products', search, deviceType],
+    queryFn: () => productService.list({ search, deviceType }),
     staleTime: Infinity,
   });
 }
@@ -278,6 +284,23 @@ export function useGetCustomerHistory(customerKey: string | null): UseQueryResul
     queryKey: ['customerHistory', customerKey],
     queryFn: () => (customerKey ? customerService.history(customerKey) : Promise.resolve([] as EnrichedTransaction[])),
     enabled: !!customerKey,
+    staleTime: Infinity,
+  });
+}
+
+// POS checkout autocomplete (text suggestions from recent jobs)
+export function useCustomerNameSuggestions(limit = 30): UseQueryResult<string[], unknown> {
+  return useQuery({
+    queryKey: ['customerNameSuggestions', limit],
+    queryFn: () => getCustomerNameSuggestions(limit),
+    staleTime: Infinity,
+  });
+}
+
+export function usePhoneModelSuggestions(limit = 30): UseQueryResult<string[], unknown> {
+  return useQuery({
+    queryKey: ['phoneModelSuggestions', limit],
+    queryFn: () => getPhoneModelSuggestions(limit),
     staleTime: Infinity,
   });
 }

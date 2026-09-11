@@ -248,6 +248,7 @@ const displayData = filtered || [];
     customerPhone: tx.customerPhone,
     phoneBrand: tx.phoneBrand,
     phoneModel: tx.phoneModel,
+    devicePasscode: (tx as any).devicePasscode,
     technicianName: tx.technicianName,
     createdAt: tx.createdAt,
     completedAt: tx.completedAt,
@@ -670,6 +671,12 @@ const displayData = filtered || [];
                   <p className="text-xs uppercase text-muted-foreground font-medium">Device</p>
                   <p>{detailsTx.phoneModel || detailsTx.phoneBrand || "—"}</p>
                 </div>
+                {(detailsTx as any).devicePasscode && (
+                  <div>
+                    <p className="text-xs uppercase text-muted-foreground font-medium">Passcode</p>
+                    <p className="font-mono">{(detailsTx as any).devicePasscode}</p>
+                  </div>
+                )}
                 <div>
                   <p className="text-xs uppercase text-muted-foreground font-medium">Technician</p>
                   <p>{detailsTx.technicianName || "None"}</p>

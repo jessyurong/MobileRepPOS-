@@ -73,6 +73,7 @@ export default function CustomersPage() {
     customerPhone: tx.customerPhone,
     phoneBrand: tx.phoneBrand,
     phoneModel: tx.phoneModel,
+    devicePasscode: (tx as any).devicePasscode,
     technicianName: tx.technicianName,
     createdAt: tx.createdAt,
     completedAt: tx.completedAt,
@@ -302,6 +303,12 @@ export default function CustomersPage() {
                   <p className="text-xs uppercase text-muted-foreground font-medium">Device</p>
                   <p>{[detailsTx.phoneBrand, detailsTx.phoneModel].filter(Boolean).join(" ") || detailsTx.phoneModel || "—"}</p>
                 </div>
+                {(detailsTx as any).devicePasscode && (
+                  <div>
+                    <p className="text-xs uppercase text-muted-foreground font-medium">Passcode</p>
+                    <p className="font-mono">{(detailsTx as any).devicePasscode}</p>
+                  </div>
+                )}
                 <div>
                   <p className="text-xs uppercase text-muted-foreground font-medium">Technician</p>
                   <p>{detailsTx.technicianName || "None"}</p>

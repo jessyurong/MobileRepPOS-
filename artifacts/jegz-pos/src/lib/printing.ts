@@ -58,6 +58,8 @@ export interface PrintSource {
   customerPhone?: string;
   phoneBrand?: string;
   phoneModel?: string;
+  /** Device lock passcode — printed on job slips only, never on receipts. */
+  devicePasscode?: string;
   technicianName?: string;
   createdAt?: string;
   completedAt?: string;
@@ -220,6 +222,7 @@ function buildPrintHtml(
       <div class="meta">
         <div class="kv"><span>Customer</span><span>${escHtml(source.customerName || "Walk-in")}${source.customerPhone ? ` · ${escHtml(source.customerPhone)}` : ""}</span></div>
         <div class="kv">Device<span>${escHtml(device)}</span></div>
+        ${kind === "slip" && source.devicePasscode ? `<div class="kv">Passcode<span>${escHtml(source.devicePasscode)}</span></div>` : ""}
         <div class="kv">Technician<span>${escHtml(source.technicianName || "Not assigned")}</span></div>
       </div>
 

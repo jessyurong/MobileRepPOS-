@@ -124,6 +124,8 @@ export interface Transaction {
   customerPhone?: string;
   phoneBrand?: string;
   phoneModel?: string;
+  /** Device lock passcode/PIN for testing after repair (internal only, never printed on receipts). */
+  devicePasscode?: string;
   /** Legacy aliases kept in sync for compatibility. */
   customer?: string;
   unit?: string;

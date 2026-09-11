@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   useListProducts,
   useCreateProduct,
@@ -7,7 +7,7 @@ import {
   getListProductsQueryKey,
   DEFAULT_REORDER_POINT,
 } from "@/lib/offline-api";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, rankFirst } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -29,10 +29,15 @@ export default function InventoryPage() {
   const [search, setSearch] = useState("");
   const [deviceTab, setDeviceTab] = useState<DeviceTab>("all");
 
-  const { data: products = [], isLoading } = useListProducts({
-    search,
+  const { data: allProducts = [], isLoading } = useListProducts({
     deviceType: deviceTab === "all" ? undefined : deviceTab,
   });
+
+  // Rank-first search: matches float to the top, non-matches stay below.
+  const products = useMemo(
+    () => rankFirst(allProducts, search, (p) => ({ name: String(p.name ?? ""), extra: [p.category] })),
+    [allProducts, search],
+  );
 
   const createProduct = useCreateProduct();
   const updateProduct = useUpdateProduct();
@@ -119,8 +124,8 @@ export default function InventoryPage() {
       <Tabs value={deviceTab} onValueChange={(v) => setDeviceTab(v as DeviceTab)}>
         <TabsList>
           <TabsTrigger value="all">All Parts</TabsTrigger>
-          <TabsTrigger value="android">🤖 Android</TabsTrigger>
-          <TabsTrigger value="iphone">🍎 iPhone</TabsTrigger>
+          <TabsTrigger value="android">Android</TabsTrigger>
+          <TabsTrigger value="iphone">iPhone</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -225,8 +230,8 @@ export default function InventoryPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="both">Both</SelectItem>
-                    <SelectItem value="android">🤖 Android</SelectItem>
-                    <SelectItem value="iphone">🍎 iPhone</SelectItem>
+                    <SelectItem value="android">Android</SelectItem>
+                    <SelectItem value="iphone">iPhone</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

@@ -8,7 +8,7 @@ import {
   getListServicesQueryKey,
   SERVICE_CATEGORIES,
 } from "@/lib/offline-api";
-import { formatCurrency, cn } from "@/lib/utils";
+import { formatCurrency, cn, rankFirst } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -70,15 +70,16 @@ export default function ServicesPage() {
   }, [services]);
 
   const filtered = useMemo(() => {
-    const term = search.toLowerCase().trim();
-    return services.filter((s) => {
-      if (term && !String(s.name ?? "").toLowerCase().includes(term)) return false;
+    // Category/status dropdowns still filter strictly; free text is rank-first
+    // (matches float to the top, the rest stay below).
+    const narrowed = services.filter((s) => {
       if (categoryFilter !== "all" && String(s.category ?? "") !== categoryFilter) return false;
       const active = s.active !== false;
       if (statusFilter === "active" && !active) return false;
       if (statusFilter === "inactive" && active) return false;
       return true;
     });
+    return rankFirst(narrowed, search, (s) => ({ name: String(s.name ?? ""), extra: [s.category] }));
   }, [services, search, categoryFilter, statusFilter]);
 
   const activeCount = services.filter((s) => s.active !== false).length;

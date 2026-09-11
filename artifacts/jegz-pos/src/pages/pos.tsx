@@ -12,6 +12,8 @@ import {
   useCreateProduct,
   useGetTransactionRaw,
   useGetTransactionItems,
+  useCustomerNameSuggestions,
+  usePhoneModelSuggestions,
   type JobCompletionResult,
   type TransactionItem,
   type TransactionStatus,
@@ -110,6 +112,7 @@ export default function PosPage() {
   const [customerPhone, setCustomerPhone] = useState("");
   const [phoneBrand, setPhoneBrand] = useState("");
   const [phoneModel, setPhoneModel] = useState("");
+  const [devicePasscode, setDevicePasscode] = useState("");
   const [technician, setTechnician] = useState("");
   const [notes, setNotes] = useState("");
   const [customerComplaint, setCustomerComplaint] = useState("");
@@ -146,6 +149,8 @@ export default function PosPage() {
   const { data: rawServices } = useGetServices();
   const { data: rawProducts } = useGetProducts();
   const { data: rawTechnicians } = useGetTechnicians();
+  const { data: customerNameOptions = [] } = useCustomerNameSuggestions();
+  const { data: phoneModelOptions = [] } = usePhoneModelSuggestions();
 
   // Only active services are selectable for new sales; inactive ones remain in
   // historical transactions unchanged.
@@ -185,6 +190,7 @@ export default function PosPage() {
     setCustomerName(tx.customerName || tx.customer || "");
     setCustomerPhone(tx.customerPhone || "");
     setPhoneBrand(tx.phoneBrand || "");
+    setDevicePasscode((tx as any).devicePasscode || "");
     setPhoneModel(tx.phoneModel || "");
     setTechnician(tx.technicianId ? String(tx.technicianId) : "");
     setNotes(tx.notes || "");
@@ -323,6 +329,7 @@ export default function PosPage() {
     setCustomerName("");
     setCustomerPhone("");
     setPhoneBrand("");
+    setDevicePasscode("");
     setPhoneModel("");
     setTechnician("");
     setNotes("");
@@ -439,6 +446,7 @@ export default function PosPage() {
     customerPhone: customerPhone.trim() || undefined,
     phoneBrand: phoneBrand.trim() || undefined,
     phoneModel: phoneModel.trim() || undefined,
+    devicePasscode: devicePasscode.trim() || undefined,
     technicianId: technician ? Number(technician) : undefined,
     technicianName: technician ? technicians.find((t) => String(t.id) === technician)?.name : undefined,
     notes: notes.trim() || undefined,
@@ -475,6 +483,7 @@ export default function PosPage() {
     customerPhone: customerPhone.trim() || undefined,
     phoneBrand: phoneBrand.trim() || undefined,
     phoneModel: phoneModel.trim() || undefined,
+    devicePasscode: devicePasscode.trim() || undefined,
     technicianName: technician ? technicians.find((t) => String(t.id) === technician)?.name : undefined,
     createdAt: new Date().toISOString(),
     items: cart.map((item) => ({
@@ -934,11 +943,34 @@ export default function PosPage() {
                 <Label>
                   Phone Model <span className="text-destructive">*</span>
                 </Label>
-                <Input value={phoneModel} onChange={(e) => setPhoneModel(e.target.value)} placeholder="e.g. iPhone 13 Pro, Galaxy S21" />
+                <Input value={phoneModel} onChange={(e) => setPhoneModel(e.target.value)} placeholder="e.g. iPhone 13 Pro, Galaxy S21" list="pos-phone-models" autoComplete="off" />
+                <datalist id="pos-phone-models">
+                  {phoneModelOptions.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
               </div>
               <div className="space-y-2">
                 <Label>Customer Name</Label>
-                <Input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Walk-in customer" />
+                <Input value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Walk-in customer" list="pos-customer-names" autoComplete="off" />
+                <datalist id="pos-customer-names">
+                  {customerNameOptions.map((n) => (
+                    <option key={n} value={n} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Customer Phone <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input type="tel" value={customerPhone} onChange={(e) => setCustomerPhone(e.target.value)} placeholder="e.g. 0917..." />
+                <p className="text-xs text-muted-foreground">Used to group repeat customers and for follow-up.</p>
+              </div>
+              <div className="space-y-2">
+                <Label>Device Passcode <span className="text-muted-foreground font-normal">(optional)</span></Label>
+                <Input value={devicePasscode} onChange={(e) => setDevicePasscode(e.target.value)} placeholder="e.g. 123456 / pattern" autoComplete="off" />
+                <p className="text-xs text-muted-foreground">Lock-screen code so the tech can test after repair. Internal only.</p>
               </div>
             </div>
 
@@ -1159,6 +1191,11 @@ export default function PosPage() {
                   {pendingSlip.customerPhone ? ` · ${pendingSlip.customerPhone}` : ""}
                   {pendingSlip.phoneModel ? ` · ${pendingSlip.phoneModel}` : ""}
                 </p>
+                {pendingSlip.devicePasscode && (
+                  <p className="mt-1 text-sm">
+                    Passcode: <span className="font-mono font-medium">{pendingSlip.devicePasscode}</span>
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-muted-foreground">Status: PENDING</p>
               </div>
               <div className="flex flex-col gap-2">

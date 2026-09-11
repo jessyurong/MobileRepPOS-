@@ -214,9 +214,53 @@ export async function normalizeLowStockDefaults(): Promise<void> {
 }
 
 // ─── Product Services ───────────────────────────────────────────────────────
+export interface ProductListOptions {
+  search?: string;
+  deviceType?: string;
+}
+
+/**
+ * Normalize any stored/legacy deviceType value to android | iphone | both.
+ * Legacy data may contain 'Samsung', 'iPhone', 'Universal', empty, etc.
+ */
+export function normalizeDeviceType(value: unknown): 'android' | 'iphone' | 'both' {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (!v || v === 'both' || v === 'all' || v === 'universal' || v === 'general' || v === 'accessories' || v === 'parts') return 'both';
+  if (v === 'android' || v === 'samsung' || v === 'oppo' || v === 'vivo' || v === 'xiaomi' || v === 'huawei' || v === 'realme' || v === 'infinix' || v === 'tecno') return 'android';
+  if (v === 'iphone' || v === 'ios' || v === 'apple') return 'iphone';
+  return 'both';
+}
+
+/** Android tab shows android + both, iPhone tab shows iphone + both. */
+export function matchesDeviceFilter(productDevice: unknown, filter: unknown): boolean {
+  const f = String(filter ?? '').trim().toLowerCase();
+  if (!f || f === 'all') return true;
+  const wanted = normalizeDeviceType(f);
+  if (wanted === 'both') return true;
+  const actual = normalizeDeviceType(productDevice);
+  if (actual === 'both') return true;
+  return actual === wanted;
+}
+
 export const productService = {
-  async list(): Promise<Product[]> {
-    return localDb.products.toArray();
+  async list(opts?: ProductListOptions): Promise<Product[]> {
+    let rows = await localDb.products.toArray();
+
+    const deviceType = opts?.deviceType;
+    if (deviceType && String(deviceType).trim().toLowerCase() !== 'all') {
+      rows = rows.filter((p) => matchesDeviceFilter((p as any).deviceType, deviceType));
+    }
+
+    const search = opts?.search?.trim().toLowerCase();
+    if (search) {
+      rows = rows.filter(
+        (p) =>
+          String(p.name ?? '').toLowerCase().includes(search) ||
+          String(p.category ?? '').toLowerCase().includes(search),
+      );
+    }
+
+    return rows;
   },
 
   async get(id: number): Promise<Product | undefined> {
@@ -661,6 +705,7 @@ export interface JobInput {
   customerPhone?: string;
   phoneBrand?: string;
   phoneModel?: string;
+  devicePasscode?: string;
   technicianId?: number;
   technicianName?: string;
   notes?: string;
@@ -682,6 +727,7 @@ export interface JobCompletionResult {
   customerPhone?: string;
   phoneBrand?: string;
   phoneModel?: string;
+  devicePasscode?: string;
   technicianName?: string;
   items: TransactionItem[];
   total: number;
@@ -699,6 +745,7 @@ function txRecordFromJobInput(input: JobInput): Omit<Transaction, 'id'> {
   const customerPhone = input.customerPhone?.trim() || undefined;
   const phoneBrand = input.phoneBrand?.trim() || undefined;
   const phoneModel = input.phoneModel?.trim() || undefined;
+  const devicePasscode = input.devicePasscode?.trim() || undefined;
   const total = round2(input.total);
   const amountPaid = input.amountPaid && input.amountPaid > 0 ? round2(input.amountPaid) : 0;
   const isPreOrder = Boolean(input.isPreOrder) || input.items.some(i => i.isPreOrder);
@@ -709,6 +756,7 @@ function txRecordFromJobInput(input: JobInput): Omit<Transaction, 'id'> {
     unit: customerPhone,
     phoneBrand,
     phoneModel,
+    devicePasscode,
     technicianId: input.technicianId,
     technicianName: input.technicianName,
     notes: input.notes || undefined,
@@ -848,6 +896,44 @@ async function toJobItemInputs(items: TransactionItem[]): Promise<JobItemInput[]
     savedToList: i.savedToList,
     notes: i.notes,
   }));
+}
+
+// ─── Autocomplete suggestions (text only, derived from recent jobs) ──────────
+/** Most-recent distinct values of one transaction field (case-insensitive). */
+async function distinctRecentValues(
+  pick: (tx: Transaction) => string | undefined,
+  limit: number,
+  exclude?: (value: string) => boolean,
+): Promise<string[]> {
+  const recent = await localDb.transactions.orderBy('createdAt').reverse().limit(300).toArray();
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const tx of recent) {
+    const raw = pick(tx)?.trim();
+    if (!raw || seen.has(raw.toLowerCase())) continue;
+    if (exclude && exclude(raw)) continue;
+    seen.add(raw.toLowerCase());
+    out.push(raw);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** Customer names for the POS checkout autocomplete (excludes Walk-in). */
+export async function getCustomerNameSuggestions(limit = 30): Promise<string[]> {
+  return distinctRecentValues(
+    (tx) => (tx.customerName as string) || tx.customer,
+    limit,
+    (v) => v.toLowerCase() === 'walk-in',
+  );
+}
+
+/** Device models for the POS checkout autocomplete (brand + model as typed). */
+export async function getPhoneModelSuggestions(limit = 30): Promise<string[]> {
+  return distinctRecentValues((tx) => {
+    const combined = [tx.phoneBrand, tx.phoneModel].filter(Boolean).join(' ').trim();
+    return combined || (tx.phoneModel as string) || undefined;
+  }, limit);
 }
 
 // ─── Customer History (derived from transaction/job records) ────────────────
@@ -1097,6 +1183,7 @@ export const jobService = {
         customerPhone: (tx.customerPhone as string) || tx.unit,
         phoneBrand: tx.phoneBrand as string,
         phoneModel: tx.phoneModel as string,
+        devicePasscode: tx.devicePasscode as string,
         technicianName: techName || 'None',
         items,
         total,
@@ -1152,6 +1239,7 @@ export const jobService = {
         customerPhone: record.customerPhone,
         phoneBrand: record.phoneBrand,
         phoneModel: record.phoneModel,
+        devicePasscode: record.devicePasscode,
         technicianName: input.technicianName || 'None',
         items,
         total,
@@ -1377,8 +1465,10 @@ export const cashDrawerService = {
   async get(): Promise<{ balance: number; entries: (CashDrawerEntry & { runningBalance: number })[] }> {
     const entries = await localDb.cashDrawerEntries.toArray();
     const withBalance = getCashDrawerEntriesWithBalance(entries);
-    const balance = withBalance.length > 0 ? withBalance[withBalance.length - 1].runningBalance : 0;
-    return { balance, entries: withBalance };
+    // Latest first for display (running balances were computed chronologically).
+    const latestFirst = [...withBalance].reverse();
+    const balance = latestFirst.length > 0 ? latestFirst[0].runningBalance : 0;
+    return { balance, entries: latestFirst };
   },
 
   async addEntry(entry: Omit<CashDrawerEntry, 'id'>): Promise<number> {
@@ -1391,8 +1481,10 @@ export const gcashDrawerService = {
   async get(): Promise<{ balance: number; entries: (GcashDrawerEntry & { runningBalance: number })[] }> {
     const entries = await localDb.gcashDrawerEntries.toArray();
     const withBalance = getGcashDrawerEntriesWithBalance(entries);
-    const balance = withBalance.length > 0 ? withBalance[withBalance.length - 1].runningBalance : 0;
-    return { balance, entries: withBalance };
+    // Latest first for display (running balances were computed chronologically).
+    const latestFirst = [...withBalance].reverse();
+    const balance = latestFirst.length > 0 ? latestFirst[0].runningBalance : 0;
+    return { balance, entries: latestFirst };
   },
 
   async addEntry(entry: Omit<GcashDrawerEntry, 'id'>): Promise<number> {
