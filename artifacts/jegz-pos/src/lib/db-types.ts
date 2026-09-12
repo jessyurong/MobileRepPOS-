@@ -255,6 +255,28 @@ export interface MetaRecord {
   [key: string]: unknown;
 }
 
+export type ActivityAction =
+  | 'login' | 'logout'
+  | 'transaction.create' | 'transaction.status' | 'transaction.complete'
+  | 'transaction.cancel' | 'transaction.delete'
+  | 'drawer.deposit' | 'drawer.withdraw'
+  | 'backup.create' | 'backup.restore'
+  | 'user.create' | 'user.update' | 'user.delete' | 'user.status';
+
+export interface ActivityLog {
+  id: number;
+  createdAt: string;
+  username: string;
+  userRole?: string;
+  userId?: number;
+  action: ActivityAction | string;
+  entityType?: string;
+  entityId?: string;
+  summary: string;
+  details?: string;
+  [key: string]: unknown;
+}
+
 // ─── Composite / analytics types ────────────────────────────────────────────
 export interface Dashboard {
   periodLabel: string;

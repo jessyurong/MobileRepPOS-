@@ -16,6 +16,7 @@
 import { localDb } from './local-db';
 import { TRANSACTION_STATUSES } from './db-types';
 import type {
+  ActivityLog,
   AppUser,
   Backjob,
   CashDrawerEntry,
@@ -42,6 +43,7 @@ import type {
 } from './db-types';
 
 export type {
+  ActivityLog,
   AppUser,
   Backjob,
   CashDrawerEntry,
@@ -1566,8 +1568,10 @@ export const dashboardService = {
     const periodProfit = round2(completed.reduce((sum, tx) => sum + tx.profit, 0));
     const periodTransactions = completed.length;
 
-    const { balance: cashCount } = await cashDrawerService.get();
-    const { balance: gcashCount } = await gcashDrawerService.get();
+    // Payment split = count of completed jobs per method (not drawer peso balances —
+    // balances live on the Drawer page; the dashboard donut expects transaction counts).
+    const cashCount = completed.filter(tx => tx.paymentMethod === 'cash').length;
+    const gcashCount = completed.filter(tx => tx.paymentMethod === 'gcash').length;
 
     const allProducts = await productService.list();
     const lowStockProducts = allProducts.filter(p => availableStockOf(p) <= (p.reorderPoint ?? DEFAULT_REORDER_POINT));
@@ -1799,3 +1803,58 @@ function getSalesTrend(
     .map(([date, stats]) => ({ date, ...stats }))
     .slice(0, 30);
 }
+
+// ─── Activity / audit log ───────────────────────────────────────────────────
+// Fire-and-forget: logging must never break the underlying business action.
+function currentSessionUser(): { id?: number; username: string; role?: string } {
+  try {
+    const stored = localStorage.getItem('jegz_session_user');
+    if (!stored) return { username: 'system' };
+    const parsed = JSON.parse(stored);
+    return {
+      id: typeof parsed.id === 'number' ? parsed.id : undefined,
+      username: parsed.username || 'unknown',
+      role: parsed.role,
+    };
+  } catch {
+    return { username: 'system' };
+  }
+}
+
+export const activityService = {
+  async log(
+    action: string,
+    summary: string,
+    opts?: { entityType?: string; entityId?: string | number; details?: string },
+  ): Promise<void> {
+    try {
+      const user = currentSessionUser();
+      await localDb.activityLogs.add({
+        createdAt: new Date().toISOString(),
+        username: user.username,
+        userRole: user.role,
+        userId: user.id,
+        action,
+        entityType: opts?.entityType,
+        entityId: opts?.entityId !== undefined ? String(opts.entityId) : undefined,
+        summary,
+        details: opts?.details,
+      } as any);
+    } catch (e) {
+      console.warn('Activity log failed:', e);
+    }
+  },
+
+  async list(limit = 300): Promise<ActivityLog[]> {
+    const rows = await localDb.activityLogs
+      .orderBy('id')
+      .reverse()
+      .limit(limit)
+      .toArray();
+    return rows as ActivityLog[];
+  },
+
+  async clear(): Promise<void> {
+    await localDb.activityLogs.clear();
+  },
+};

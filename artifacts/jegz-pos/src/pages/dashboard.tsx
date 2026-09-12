@@ -1,15 +1,10 @@
 import { useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   useGetDashboard,
   useShopProfile,
-  useGetLastBackupTime,
-  backupNow,
-  LAST_BACKUP_QUERY_KEY,
   DEFAULT_REORDER_POINT,
 } from "@/lib/offline-api";
-import { useToast } from "@/hooks/use-toast";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { formatCurrency } from "@/lib/utils";
 import {
   Card,
   CardContent,
@@ -25,7 +20,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Tabs,
   TabsList,
@@ -38,8 +32,6 @@ import {
   TrendingUp,
   Wallet,
   CheckCircle2,
-  DatabaseBackup,
-  Download,
 } from "lucide-react";
 import {
   AreaChart,
@@ -104,33 +96,6 @@ function ChartTooltip({
 export default function Dashboard() {
   const [period, setPeriod] = useState<Period>("today");
   const shopProfile = useShopProfile();
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const { data: lastBackup } = useGetLastBackupTime();
-  const [backingUp, setBackingUp] = useState(false);
-
-  const handleBackupNow = async () => {
-    setBackingUp(true);
-    try {
-      const result = await backupNow();
-      toast({
-        title: result.method === "folder" ? "Backup saved to folder" : "Backup downloaded",
-        description:
-          result.method === "folder"
-            ? `Saved to ${result.folderName}/Backups/${result.fileName}`
-            : "Your POS data backup was created on this device.",
-      });
-      queryClient.invalidateQueries({ queryKey: LAST_BACKUP_QUERY_KEY });
-    } catch (error) {
-      toast({
-        title: "Failed to create backup",
-        description: error instanceof Error ? error.message : "Please try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setBackingUp(false);
-    }
-  };
 
   const {
     data: rawDashboard,
@@ -269,29 +234,6 @@ export default function Dashboard() {
             </TabsTrigger>
           </TabsList>
         </Tabs>
-      </div>
-
-      {/* BACKUP STATUS */}
-      <div className="flex flex-col gap-3 rounded-lg border bg-card px-4 py-3 sm:flex-row sm:items-center">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <DatabaseBackup className="h-4 w-4 shrink-0 text-primary" />
-          <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground shrink-0">
-            Backup Status
-          </span>
-          <span className="truncate text-sm">
-            {lastBackup ? (
-              <>
-                Last backup: <strong>{formatDate(lastBackup)}</strong>
-              </>
-            ) : (
-              "No backup created yet."
-            )}
-          </span>
-        </div>
-        <Button size="sm" onClick={handleBackupNow} disabled={backingUp} className="shrink-0 gap-2">
-          <Download className="h-4 w-4" />
-          {backingUp ? "Backing up..." : "Backup Now"}
-        </Button>
       </div>
 
       {/* KPI CARDS */}

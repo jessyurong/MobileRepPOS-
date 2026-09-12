@@ -9,6 +9,7 @@ import type { UseQueryResult, UseMutationResult } from '@tanstack/react-query';
 import bcrypt from 'bcryptjs';
 import { localDb } from './local-db';
 import {
+  activityService,
   productService,
   serviceService,
   technicianService,
@@ -30,6 +31,7 @@ import {
   isCompletedStatus,
   isOpenStatus,
   type EnrichedTransaction,
+  type ActivityLog,
   type JobCompletionResult,
   type JobInput,
   type Product,
@@ -65,6 +67,7 @@ function useInvalidateBusinessData() {
     queryClient.invalidateQueries({ queryKey: ['technicianReport'] });
     queryClient.invalidateQueries({ queryKey: ['customerNameSuggestions'] });
     queryClient.invalidateQueries({ queryKey: ['phoneModelSuggestions'] });
+    queryClient.invalidateQueries({ queryKey: ['activityLogs'] });
   }, [queryClient]);
 }
 
@@ -357,6 +360,9 @@ export function useUpdateTransactionStatus(): UseMutationResult<void, unknown, {
     mutationFn: async ({ id, status, data }) => {
       const newStatus = (data?.status || status) as TransactionStatus;
       await jobService.updateJobStatus(id, newStatus);
+      void activityService.log('transaction.status', `Job #${id} marked as ${newStatus}`, {
+        entityType: 'transaction', entityId: id,
+      });
     },
     onSuccess: () => invalidate(),
   });
@@ -396,7 +402,12 @@ export function useDeleteTransaction(): UseMutationResult<void, unknown, { id: n
       for (const item of items) {
         if (item.id) await transactionItemService.delete(item.id);
       }
-      return transactionService.delete(id);
+      await transactionService.delete(id);
+      const label = tx ? `${tx.customerName || tx.customer || 'Walk-in'} (${tx.jobNumber || `#${id}`})` : `job #${id}`;
+      void activityService.log('transaction.delete', `Deleted ${label}`, {
+        entityType: 'transaction', entityId: id,
+        details: tx ? `status=${tx.status} total=${tx.totalAmount ?? tx.total ?? 0}` : undefined,
+      });
     },
     onSuccess: () => invalidate(),
   });
@@ -433,11 +444,19 @@ export function useCompleteTransaction(): UseMutationResult<
 > {
   const invalidate = useInvalidateBusinessData();
   return useMutation({
-    mutationFn: ({ id, data, paymentMethod, cashReceived }) => {
+    mutationFn: async ({ id, data, paymentMethod, cashReceived }) => {
       if (id) {
-        return jobService.completeJob(id, { paymentMethod, cashReceived });
+        const result = await jobService.completeJob(id, { paymentMethod, cashReceived });
+        void activityService.log('transaction.complete', `Completed job #${id} via ${paymentMethod}`, {
+          entityType: 'transaction', entityId: id,
+        });
+        return result;
       }
-      return jobService.completeNewJob(data, { cashReceived });
+      const result = await jobService.completeNewJob(data, { cashReceived });
+      void activityService.log('transaction.complete', `Completed walk-in sale via ${paymentMethod}`, {
+        entityType: 'transaction', entityId: result?.jobNumber || result?.id,
+      });
+      return result;
     },
     onSuccess: () => invalidate(),
   });
@@ -446,7 +465,12 @@ export function useCompleteTransaction(): UseMutationResult<
 export function useCancelTransaction(): UseMutationResult<void, unknown, { id: number }, unknown> {
   const invalidate = useInvalidateBusinessData();
   return useMutation({
-    mutationFn: ({ id }) => jobService.cancelJob(id),
+    mutationFn: async ({ id }) => {
+      await jobService.cancelJob(id);
+      void activityService.log('transaction.cancel', `Cancelled job #${id}`, {
+        entityType: 'transaction', entityId: id,
+      });
+    },
     onSuccess: () => invalidate(),
   });
 }
@@ -459,7 +483,13 @@ export function useRecordDeposit(): UseMutationResult<
 > {
   const invalidate = useInvalidateBusinessData();
   return useMutation({
-    mutationFn: ({ id, data }) => jobService.recordDeposit(id, data),
+    mutationFn: async ({ id, data }) => {
+      const result = await jobService.recordDeposit(id, data);
+      void activityService.log('drawer.deposit', `Deposit ₱${data.amount} on job #${id} (${data.method})`, {
+        entityType: 'transaction', entityId: id,
+      });
+      return result;
+    },
     onSuccess: () => invalidate(),
   });
 }
@@ -563,7 +593,15 @@ export function useGetCashDrawer(): UseQueryResult<{ balance: number; entries: a
 export function useAddCashDrawerEntry(): UseMutationResult<number, unknown, any> {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (entry) => cashDrawerService.addEntry(entry),
+    mutationFn: async (entry) => {
+      const id = await cashDrawerService.addEntry(entry);
+      void activityService.log(
+        entry?.type === 'withdraw' ? 'drawer.withdraw' : 'drawer.deposit',
+        `Cash ${entry?.type || 'entry'} ₱${entry?.amount || 0}`,
+        { entityType: 'cashDrawer', entityId: id },
+      );
+      return id;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cashDrawer'] });
     },
@@ -582,7 +620,15 @@ export function useGetGcashDrawer(): UseQueryResult<{ balance: number; entries: 
 export function useAddGcashDrawerEntry(): UseMutationResult<number, unknown, any> {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (entry) => gcashDrawerService.addEntry(entry),
+    mutationFn: async (entry) => {
+      const id = await gcashDrawerService.addEntry(entry);
+      void activityService.log(
+        entry?.type === 'withdraw' ? 'drawer.withdraw' : 'drawer.deposit',
+        `GCash ${entry?.type || 'entry'} ₱${entry?.amount || 0}`,
+        { entityType: 'gcashDrawer', entityId: id },
+      );
+      return id;
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gcashDrawer'] });
     },
@@ -590,6 +636,14 @@ export function useAddGcashDrawerEntry(): UseMutationResult<number, unknown, any
 }
 
 // Settings Hooks
+export function useActivityLogs(limit = 300): UseQueryResult<ActivityLog[], unknown> {
+  return useQuery({
+    queryKey: ['activityLogs', limit],
+    queryFn: () => activityService.list(limit),
+    staleTime: 30_000,
+  });
+}
+
 export function useGetSettings(): UseQueryResult<Record<string, any>, unknown> {
   return useQuery({
     queryKey: ['settings'],
@@ -664,11 +718,15 @@ export function useLookupCustomer(params?: { query?: string }): UseQueryResult<a
 export function useCashDeposit(): UseMutationResult<number, unknown, any> {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: any) => {
+    mutationFn: async (payload: any) => {
       const d = payload?.data || payload;
       const amount = Number(d?.amount || 0);
       const note = d?.note || d?.notes || 'Deposit';
-      return cashDrawerService.addEntry({ type: 'deposit', amount, note, notes: note });
+      const id = await cashDrawerService.addEntry({ type: 'deposit', amount, note, notes: note });
+      void activityService.log('drawer.deposit', `Cash deposit ₱${amount} — ${note}`, {
+        entityType: 'cashDrawer', entityId: id,
+      });
+      return id;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cashDrawer'] });
@@ -680,11 +738,15 @@ export function useCashDeposit(): UseMutationResult<number, unknown, any> {
 export function useCashWithdraw(): UseMutationResult<number, unknown, any> {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: any) => {
+    mutationFn: async (payload: any) => {
       const d = payload?.data || payload;
       const amount = Number(d?.amount || 0);
       const note = d?.note || d?.notes || 'Withdrawal';
-      return cashDrawerService.addEntry({ type: 'withdraw', amount, note, notes: note });
+      const id = await cashDrawerService.addEntry({ type: 'withdraw', amount, note, notes: note });
+      void activityService.log('drawer.withdraw', `Cash withdraw ₱${amount} — ${note}`, {
+        entityType: 'cashDrawer', entityId: id,
+      });
+      return id;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cashDrawer'] });
@@ -697,11 +759,15 @@ export function useCashWithdraw(): UseMutationResult<number, unknown, any> {
 export function useGcashDeposit(): UseMutationResult<number, unknown, any> {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: any) => {
+    mutationFn: async (payload: any) => {
       const d = payload?.data || payload;
       const amount = Number(d?.amount || 0);
       const note = d?.note || d?.notes || 'GCash Deposit';
-      return gcashDrawerService.addEntry({ type: 'deposit', amount, note, notes: note });
+      const id = await gcashDrawerService.addEntry({ type: 'deposit', amount, note, notes: note });
+      void activityService.log('drawer.deposit', `GCash deposit ₱${amount} — ${note}`, {
+        entityType: 'gcashDrawer', entityId: id,
+      });
+      return id;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gcashDrawer'] });
@@ -713,11 +779,15 @@ export function useGcashDeposit(): UseMutationResult<number, unknown, any> {
 export function useGcashWithdraw(): UseMutationResult<number, unknown, any> {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: any) => {
+    mutationFn: async (payload: any) => {
       const d = payload?.data || payload;
       const amount = Number(d?.amount || 0);
       const note = d?.note || d?.notes || 'GCash Withdrawal';
-      return gcashDrawerService.addEntry({ type: 'withdraw', amount, note, notes: note });
+      const id = await gcashDrawerService.addEntry({ type: 'withdraw', amount, note, notes: note });
+      void activityService.log('drawer.withdraw', `GCash withdraw ₱${amount} — ${note}`, {
+        entityType: 'gcashDrawer', entityId: id,
+      });
+      return id;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['gcashDrawer'] });

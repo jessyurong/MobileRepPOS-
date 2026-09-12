@@ -1,6 +1,11 @@
 import { useRef, useState } from "react";
+import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
+import bcrypt from "bcryptjs";
+import { localDb } from "@/lib/local-db";
+import { useAuth } from "@/lib/auth-context";
 import {
+  activityService,
   backupNow,
   importBackup,
   previewRestore,
@@ -17,6 +22,7 @@ import { useStorageFolder } from "@/lib/storage-folder-context";
 import { formatDate, cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
@@ -321,10 +327,43 @@ function LegacyImportResult({ result }: { result: MigrationResult }) {
 export default function BackupPage() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const [, setLocation] = useLocation();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const storage = useStorageFolder();
 
   const { data: lastBackup } = useGetLastBackupTime();
+
+  // Security gate: hidden recovery page — admin only + password re-auth.
+  // Unlocked in memory only, so a refresh or logout locks it again.
+  const [unlocked, setUnlocked] = useState(false);
+  const [password, setPassword] = useState("");
+  const [verifying, setVerifying] = useState(false);
+  const [verifyError, setVerifyError] = useState("");
+
+  const verifyPassword = async () => {
+    if (!password) {
+      setVerifyError("Enter your admin password.");
+      return;
+    }
+    setVerifying(true);
+    setVerifyError("");
+    try {
+      const stored = localStorage.getItem("jegz_session_user");
+      if (!stored) throw new Error("Not logged in.");
+      const sessionUser = JSON.parse(stored);
+      const dbUser = await localDb.users.get(sessionUser.id);
+      if (!dbUser || !dbUser.passwordHash) throw new Error("Account not found.");
+      const valid = await bcrypt.compare(password, dbUser.passwordHash as string);
+      if (!valid) throw new Error("Wrong password. Try again.");
+      setUnlocked(true);
+      setPassword("");
+    } catch (error) {
+      setVerifyError(error instanceof Error ? error.message : "Could not verify password.");
+    } finally {
+      setVerifying(false);
+    }
+  };
 
   const [backingUp, setBackingUp] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -353,6 +392,7 @@ export default function BackupPage() {
     setBackingUp(true);
     try {
       const result = await backupNow();
+      void activityService.log("backup.create", `Backup saved (${result.method}: ${result.fileName})`);
       toast({
         title: result.method === "folder" ? "Backup saved to folder" : "Backup downloaded",
         description:
@@ -429,6 +469,10 @@ export default function BackupPage() {
       setRestoreResult(result);
       setPendingRestore(null);
       if (result.success) {
+        void activityService.log(
+          "backup.restore",
+          `Backup ${result.mode === "merge" ? "merged" : "restored"} (${pendingRestore.fileName}): +${result.itemsImported} imported`,
+        );
         toast({
           title: result.mode === "merge" ? "Backup merged" : "Backup restored",
           description: `Imported ${result.itemsImported} items${
@@ -497,6 +541,10 @@ export default function BackupPage() {
       setPendingLegacy(null);
       setLegacyPreview(null);
       if (result.success) {
+        void activityService.log(
+          "backup.restore",
+          `Legacy backup imported (${pendingLegacy.fileName}): +${result.itemsImported} records`,
+        );
         toast({
           title: "Legacy data imported",
           description: `Imported ${result.itemsImported} records. ${result.itemsSkipped} existing records were preserved.`,
@@ -516,6 +564,67 @@ export default function BackupPage() {
   };
 
   const restoreMetadata = pendingRestore?.backup.metadata;
+
+  // Non-admins (or logged-out users) get nothing — not even the existence of the data.
+  if (!user || user.role !== "admin") {
+    return (
+      <div className="mx-auto max-w-md space-y-4 pt-16 text-center">
+        <ShieldCheck className="mx-auto h-10 w-10 text-muted-foreground" />
+        <h1 className="text-xl font-bold">Restricted area</h1>
+        <p className="text-sm text-muted-foreground">
+          This recovery page is available to administrators only.
+        </p>
+        <Button variant="outline" onClick={() => setLocation("/")}>
+          Back to Dashboard
+        </Button>
+      </div>
+    );
+  }
+
+  // Admins must re-enter their password every visit. Refresh locks it again.
+  if (!unlocked) {
+    return (
+      <div className="mx-auto max-w-md space-y-6 pt-16">
+        <div className="text-center">
+          <DatabaseBackup className="mx-auto h-10 w-10 text-primary" />
+          <h1 className="mt-2 text-xl font-bold">Backup &amp; Restore</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Hidden recovery page — not shown in the sidebar for security.
+            Confirm your admin password to continue.
+          </p>
+        </div>
+        <Card>
+          <CardContent className="space-y-3 p-5">
+            <div className="space-y-2">
+              <Label htmlFor="backup-unlock-password">Admin password</Label>
+              <Input
+                id="backup-unlock-password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") verifyPassword(); }}
+                placeholder="••••••••"
+                autoFocus
+              />
+              {verifyError && <p className="text-xs font-medium text-destructive">{verifyError}</p>}
+            </div>
+            <Button className="w-full" onClick={verifyPassword} disabled={verifying}>
+              {verifying ? "Verifying..." : "Unlock Backup & Restore"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Tip: bookmark this URL — <span className="font-mono">/backup</span> — since it no longer appears in the menu.
+            </p>
+          </CardContent>
+        </Card>
+        <div className="text-center">
+          <Button variant="ghost" size="sm" onClick={() => setLocation("/")}>
+            Back to Dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">

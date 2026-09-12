@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import bcrypt from "bcryptjs";
 import { localDb } from "./local-db";
+import { activityService } from "./offline-data-services";
 import { seedDatabaseIfNeeded } from "./seed-data";
 
 export type UserRole = "admin" | "staff";
@@ -102,6 +103,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
       localStorage.setItem(SESSION_KEY, JSON.stringify(currentUser));
       setUser(currentUser);
+      void activityService.log("login", `${currentUser.username} signed in`, {
+        entityType: "user", entityId: currentUser.id,
+      });
       return {};
     } catch (e) {
       console.error("Login error:", e);
@@ -110,6 +114,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    try {
+      const stored = localStorage.getItem(SESSION_KEY);
+      const parsed = stored ? JSON.parse(stored) : null;
+      if (parsed?.username) {
+        await activityService.log("logout", `${parsed.username} signed out`, {
+          entityType: "user", entityId: parsed.id,
+        });
+      }
+    } catch {
+      // logging must never block logout
+    }
     localStorage.removeItem(SESSION_KEY);
     setUser(null);
   }, []);

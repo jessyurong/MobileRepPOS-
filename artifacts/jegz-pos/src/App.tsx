@@ -20,6 +20,7 @@ import ReportsPage from "@/pages/reports";
 import DefectiveItemsPage from "@/pages/defective";
 import BackjobsPage from "@/pages/backjobs";
 import UsersPage from "@/pages/users";
+import ActivityPage from "@/pages/activity";
 import BackupPage from "@/pages/backup";
 import SettingsPage from "@/pages/settings";
 import NotFound from "@/pages/not-found";
@@ -56,6 +57,7 @@ function AppContent() {
         <Route path="/defective" component={DefectiveItemsPage} />
         <Route path="/backjobs" component={BackjobsPage} />
         <Route path="/users" component={UsersPage} />
+        <Route path="/activity" component={ActivityPage} />
         <Route path="/backup" component={BackupPage} />
         <Route path="/settings" component={SettingsPage} />
         <Route component={NotFound} />

@@ -20,8 +20,8 @@ import {
   Shield,
   BarChart2,
   Contact,
-  DatabaseBackup,
   Settings,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -49,7 +49,9 @@ const navItems: NavItem[] = [
   { href: "/defective",    label: "Defective Items",icon: AlertTriangle,   permission: "defective_items" },
   { href: "/backjobs",     label: "Backjobs",       icon: RotateCcw,       permission: "backjobs" },
   { href: "/users",        label: "User Management",icon: UserCog,         adminOnly: true },
-  { href: "/backup",       label: "Backup & Restore",icon: DatabaseBackup,  adminOnly: true },
+  { href: "/activity",     label: "Activity Log",   icon: ClipboardList,  adminOnly: true },
+  // Backup & Restore is intentionally hidden from the sidebar (direct URL /backup only,
+  // admin + password re-auth required) so staff can't discover or open it.
   { href: "/settings",     label: "Settings",        icon: Settings },
 ];
 

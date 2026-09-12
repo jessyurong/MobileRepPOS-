@@ -466,22 +466,6 @@ export default function SettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader className="border-b">
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheck className="h-4 w-4 text-primary" />
-            Backups
-          </CardTitle>
-          <CardDescription>Backups were moved to a dedicated page.</CardDescription>
-        </CardHeader>
-        <CardContent className="p-5">
-          <Link href="/backup" className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
-            Manage backups
-            <ArrowRight className="h-4 w-4" />
-          </Link>
-        </CardContent>
-      </Card>
-
       <StorageFolderSection />
     </div>
   );

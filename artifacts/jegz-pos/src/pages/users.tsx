@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import bcrypt from "bcryptjs";
 import { useAuth, ALL_PERMISSIONS, type Permission } from "@/lib/auth-context";
 import { localDb } from "@/lib/local-db";
+import { activityService } from "@/lib/offline-api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -120,6 +121,9 @@ export default function UsersPage() {
           createdAt: new Date().toISOString(),
         } as any);
         toast({ title: "User created" });
+        void activityService.log("user.create", `Created user "${form.username}" (${form.role})`, {
+          entityType: "user", entityId: form.username,
+        });
       } else {
         const updateFields: any = {
           role: form.role,
@@ -131,6 +135,9 @@ export default function UsersPage() {
         }
         await localDb.users.update(editingUser.id, updateFields);
         toast({ title: "User updated" });
+        void activityService.log("user.update", `Updated user "${editingUser.username}"`, {
+          entityType: "user", entityId: editingUser.id,
+        });
       }
       setModalOpen(false);
       loadUsers();
@@ -146,6 +153,9 @@ export default function UsersPage() {
     try {
       await localDb.users.delete(u.id);
       toast({ title: "User deleted" });
+      void activityService.log("user.delete", `Deleted user "${u.username}"`, {
+        entityType: "user", entityId: u.id,
+      });
       loadUsers();
     } catch (e) {
       console.error("Failed to delete user:", e);
@@ -158,6 +168,9 @@ export default function UsersPage() {
     try {
       await localDb.users.update(u.id, { isActive: !u.isActive });
       toast({ title: u.isActive ? "User deactivated" : "User activated" });
+      void activityService.log("user.status", `${u.isActive ? "Deactivated" : "Activated"} user "${u.username}"`, {
+        entityType: "user", entityId: u.id,
+      });
       loadUsers();
     } catch (e) {
       console.error("Failed to toggle user:", e);
