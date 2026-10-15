@@ -395,7 +395,7 @@ export default function PosPage() {
     }
   };
 
-  const addCustomProduct = async () => {
+  const addCustomProduct = async (asPreOrder = false) => {
     const name = productForm.name.trim();
     const price = round2(Number(productForm.price) || 0);
     const cost = round2(Number(productForm.cost) || 0);
@@ -417,18 +417,23 @@ export default function PosPage() {
         });
       }
       const qty = Math.max(1, Number(productForm.quantity) || 1);
+      const finalPrice = asPreOrder ? round2(price + (price * preOrderMarkup) / 100) : price;
       setCart((current) => [
         ...current,
         {
           id: `custom-product-${Date.now()}`,
           refId,
           name,
-          price,
+          price: finalPrice,
           quantity: qty,
           type: "product",
           cost,
           isCustom: true,
           savedToList: productForm.saveToList,
+          isPreOrder: asPreOrder,
+          basePrice: asPreOrder ? price : undefined,
+          markupPercentage: asPreOrder ? preOrderMarkup : undefined,
+          markupAmount: asPreOrder ? round2((price * preOrderMarkup) / 100) : undefined,
         },
       ]);
       setProductForm({ name: "", cost: "0", price: "0", quantity: "1", saveToList: false });
@@ -922,9 +927,21 @@ export default function PosPage() {
               <Checkbox checked={productForm.saveToList} onCheckedChange={(checked) => setProductForm({ ...productForm, saveToList: checked === true })} />
               Save to Inventory (stock will be added)
             </label>
-            <Button className="w-full" onClick={addCustomProduct} disabled={isSubmitting}>
-              {isSubmitting ? "Adding..." : "Add product to sale"}
-            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button className="w-full" onClick={() => addCustomProduct(false)} disabled={isSubmitting}>
+                {isSubmitting ? "Adding..." : "Add product to sale"}
+              </Button>
+              <Button
+                className="w-full"
+                variant="outline"
+                onClick={() => addCustomProduct(true)}
+                disabled={isSubmitting}
+                title={`Pre-order at ${preOrderMarkup}% markup`}
+              >
+                <Tag className="h-4 w-4 mr-1" />
+                {isSubmitting ? "Adding..." : `Pre-order (${preOrderMarkup}%)`}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
